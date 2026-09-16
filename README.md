@@ -497,7 +497,8 @@ Deliberately, per the agreed build order — the first slice was play + review:
   them yet. At beginner level "61% of your blunders came after under two
   seconds" is probably the most actionable line the app could print.
 - **Explorer pre-crawl** for real per-rating move frequencies.
-- **Puzzles** — explicitly skipped.
+- **PWA** and **puzzles chosen by your measured weaknesses** — see
+  [ROADMAP.md](ROADMAP.md).
 
 ## Licences
 
