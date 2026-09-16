@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Chess Trainer</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/favicon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#7a5c3e">
+<link rel="stylesheet" href="/static/vendor/cm-chessboard/assets/chessboard.css">
+<link rel="stylesheet" href="/static/vendor/cm-chessboard/assets/extensions/markers/markers.css">
+<link rel="stylesheet" href="/static/vendor/cm-chessboard/assets/extensions/arrows/arrows.css">
+<link rel="stylesheet" href="/static/vendor/cm-chessboard/assets/extensions/promotion-dialog/promotion-dialog.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>Chess&nbsp;Trainer</h1>
+  <div class="meters">
+    <div class="meter">
+      <span class="meter-label">your rating</span>
+      <strong id="m-rating">–</strong>
+      <span class="meter-sub" id="m-rd"></span>
+    </div>
+    <div class="meter">
+      <span class="meter-label">opponent dial</span>
+      <strong id="m-bot">–</strong>
+      <span class="meter-sub">auto-tuned</span>
+    </div>
+    <div class="meter" id="m-form-wrap">
+      <span class="meter-label">last 10</span>
+      <span id="m-form" class="form"></span>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button class="tab is-active" data-view="play">Play</button>
+    <button class="tab" data-view="reps">Reps</button>
+    <button class="tab" data-view="review">Review</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ---------------------------------------------------------- PLAY --- -->
+  <section id="view-play" class="view is-active">
+    <div class="layout">
+      <div class="board-col">
+        <div class="board-stage">
+          <div id="board" class="board"></div>
+          <div id="board-overlay" class="board-overlay" hidden>
+            <div id="result-card" class="result-card">
+              <strong id="result-headline"></strong>
+              <span id="result-detail"></span>
+            </div>
+          </div>
+        </div>
+        <div class="board-actions" id="play-nav" hidden>
+          <button id="p-first" class="btn btn-quiet" title="Start">&laquo;</button>
+          <button id="p-prev" class="btn btn-quiet">&lsaquo; Prev</button>
+          <button id="p-next" class="btn btn-quiet">Next &rsaquo;</button>
+          <button id="p-live" class="btn btn-quiet" hidden>Back to live</button>
+          <span id="p-viewing" class="viewing"></span>
+        </div>
+        <div class="board-actions">
+          <button id="btn-resign" class="btn btn-quiet" hidden>Resign</button>
+          <button id="btn-review-this" class="btn btn-primary" hidden>Review this game</button>
+          <button id="btn-newgame" class="btn" hidden>New game</button>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div id="setup" class="card">
+          <h2>New game</h2>
+
+          <label class="field">
+            <span>Opening to practise</span>
+            <input id="opening-search" type="text" placeholder="e.g. Italian Game, Caro-Kann…"
+                   autocomplete="off" spellcheck="false">
+            <div id="opening-results" class="autocomplete" hidden></div>
+          </label>
+          <p id="opening-chosen" class="chosen" hidden></p>
+
+          <label class="field">
+            <span>How closely should the bot follow it?</span>
+            <select id="mode">
+              <option value="drill" selected>Drill — follow the line, then play on</option>
+              <option value="strict">Strict book — stay in theory as long as possible</option>
+              <option value="realistic">Realistic — no book, just play like a human</option>
+            </select>
+          </label>
+          <p class="hint" id="mode-hint"></p>
+
+          <label class="field">
+            <span>Opponent strength</span>
+            <select id="opt-offset">
+              <option value="-300">Much easier</option>
+              <option value="-150">Easier</option>
+              <option value="0" selected>Matched to me</option>
+              <option value="150">Harder</option>
+            </select>
+          </label>
+          <p class="hint" id="offset-hint"></p>
+
+          <label class="field">
+            <span>You play</span>
+            <select id="color">
+              <option value="white" selected>White</option>
+              <option value="black">Black</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+
+          <div class="opt-row">
+            <label class="check">
+              <input type="checkbox" id="opt-mate-hints">
+              <span>Tell me when I have a forced mate</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="opt-material">
+              <span>Tell me when something is hanging</span>
+            </label>
+          </div>
+          <div class="opt-row">
+            <label class="check">
+              <input type="checkbox" id="opt-sounds">
+              <span>Sounds</span>
+            </label>
+          </div>
+          <div class="opt-row">
+            <label class="depth">
+              up to mate in
+              <select id="opt-mate-max">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3" selected>3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint">It only tells you a mate is there, never which move it
+             is. Remembered between games.</p>
+
+          <details id="guard-settings" class="prog-more">
+            <summary>Mistakes to catch me on</summary>
+            <p class="hint">When you make one of these, the game pauses and offers
+               you the move back. Games where you take a move back do not move
+               your rating.</p>
+            <div id="guard-tags"></div>
+          </details>
+
+          <button id="btn-new" class="btn btn-primary btn-block">Start game</button>
+        </div>
+
+        <div id="game-info" class="card" hidden>
+          <h2>Game</h2>
+          <dl class="facts">
+            <dt>Opening</dt><dd id="g-opening">–</dd>
+            <dt>Opponent</dt><dd id="g-bot">–</dd>
+            <dt>Mode</dt><dd id="g-mode">–</dd>
+            <dt id="g-tb-label" hidden>Takebacks</dt><dd id="g-takebacks" hidden>0</dd>
+          </dl>
+          <div id="g-status" class="status"></div>
+          <div id="mate-hint" class="mate-hint" hidden></div>
+          <div id="material-hint" class="mate-hint is-material" hidden></div>
+          <div id="guard" class="guard" hidden>
+            <strong id="guard-title"></strong>
+            <p id="guard-message"></p>
+            <div class="guard-actions">
+              <button id="guard-undo" class="btn btn-primary">Take it back</button>
+              <button id="guard-keep" class="btn btn-quiet">Play it anyway</button>
+            </div>
+          </div>
+          <div id="g-line-warning" class="warn" hidden></div>
+          <ol id="movelist" class="movelist"></ol>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- -------------------------------------------------------- REVIEW --- -->
+  <section id="view-review" class="view">
+    <div id="cc-card" class="card">
+      <h2>chess.com</h2>
+      <div id="cc-connect">
+        <p class="hint">Import the games that actually decide your rating and
+           review them with the same analysis, so you can see whether what you
+           practise here is showing up over there.</p>
+        <div class="cc-row">
+          <input id="cc-username" type="text" placeholder="your chess.com username"
+                 autocomplete="off" spellcheck="false">
+          <button id="cc-connect-btn" class="btn btn-primary">Connect</button>
+        </div>
+      </div>
+      <div id="cc-linked" hidden>
+        <p class="cc-who">Connected as <strong id="cc-name"></strong>
+           <span class="hint" id="cc-counts"></span></p>
+        <div class="cc-row">
+          <button id="cc-import" class="btn btn-primary">Import new games</button>
+          <button id="cc-forget" class="btn btn-quiet">Disconnect</button>
+        </div>
+        <label class="opt"><input type="checkbox" id="cc-auto">
+          Watch for new games and import them automatically</label>
+        <p class="hint" id="cc-watch"></p>
+        <p class="hint" id="cc-progress"></p>
+      </div>
+      <p class="hint" id="cc-error" hidden></p>
+    </div>
+
+    <div id="stats-card" class="card" hidden>
+      <h2>What to work on</h2>
+      <div class="rep-filters" id="stats-scope" role="group" aria-label="Which games to count">
+        <button class="chip is-on" data-source="all">All games</button>
+        <button class="chip" data-source="trainer">Trainer</button>
+        <button class="chip" data-source="chesscom">chess.com</button>
+      </div>
+      <p class="hint" id="stats-empty" hidden></p>
+
+    <div id="progress-card" hidden>
+      <p id="prog-headline" class="headline"></p>
+
+      <div class="tiles">
+        <div class="tile"><span class="meter-label">games reviewed</span><strong id="prog-games">–</strong></div>
+        <div class="tile"><span class="meter-label">record</span><strong id="prog-record">–</strong></div>
+        <div class="tile"><span class="meter-label">accuracy</span><strong id="prog-acc">–</strong>
+          <span class="trend" id="prog-acc-trend"></span></div>
+        <div class="tile"><span class="meter-label">blunders / 100 moves</span><strong id="prog-blun">–</strong>
+          <span class="trend" id="prog-blun-trend"></span></div>
+        <div class="tile"><span class="meter-label">their blunders you punished</span>
+          <strong id="prog-aware">–</strong><span class="trend" id="prog-aware-sub"></span></div>
+      </div>
+
+      <div id="prog-weaknesses"></div>
+
+      <details class="prog-more">
+        <summary>Where it goes wrong</summary>
+        <div class="prog-grid">
+          <div><h3>By phase</h3><div id="prog-phase"></div></div>
+          <div><h3>By piece moved</h3><div id="prog-piece"></div></div>
+        </div>
+      </details>
+    </div>
+    </div>
+
+    <div id="review-list" class="card">
+      <h2>Your games</h2>
+      <p class="hint">Pick a finished game to have it analysed, or pick up an
+         unfinished one where you left it.</p>
+      <table class="table" id="history-table">
+        <thead><tr><th>When</th><th>Opening</th><th>Colour</th><th>Result</th><th>Opponent</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="history-empty" class="hint" hidden>No games yet — play one first.</p>
+    </div>
+
+    <div id="review-progress" class="card progress-card" hidden>
+      <h2>Analysing…</h2>
+      <div class="bar"><div id="review-bar"></div></div>
+      <p class="hint" id="review-progress-text">Stockfish is working through the game.</p>
+    </div>
+
+    <div id="review-header" hidden>
+      <button id="review-back" class="btn btn-quiet">&lsaquo; All games</button>
+      <span id="review-caption" class="viewing"></span>
+    </div>
+
+    <div id="review-body" class="layout" hidden>
+      <div class="board-col">
+        <div id="rboard" class="board"></div>
+        <div class="evalbar-wrap"><div id="evalbar"><div id="evalfill"></div></div></div>
+        <div class="board-actions">
+          <button id="r-prev" class="btn btn-quiet">‹ Prev</button>
+          <button id="r-next" class="btn btn-quiet">Next ›</button>
+        </div>
+
+        <div id="arrow-key" class="arrow-key" hidden>
+          <span><i class="k k-danger"></i>you played</span>
+          <span><i class="k k-success"></i>play this instead</span>
+          <span><i class="k k-warning"></i>how they punish it</span>
+        </div>
+
+        <div class="card graph-card">
+          <h2 id="graph-title">How the game swung</h2>
+          <p class="hint graph-sub">Your winning chances after every move. Click
+             anywhere on it to jump there.</p>
+          <div id="graph-wrap">
+            <div id="evalgraph"></div>
+            <div id="graph-tip" class="graph-tip" hidden></div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="side">
+        <div class="card">
+          <h2>Accuracy</h2>
+          <div class="accuracy-row">
+            <div><span class="meter-label">you</span><strong id="acc-you">–</strong></div>
+            <div><span class="meter-label">opponent</span><strong id="acc-opp">–</strong></div>
+            <div><span class="meter-label">avg loss</span><strong id="acc-acpl">–</strong></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>What to work on</h2>
+          <p class="hint">Ranked by how much it costs you <em>and</em> how often
+             players at your level make the same mistake — the repeatable
+             errors are the ones worth fixing.</p>
+          <div id="lessons"></div>
+        </div>
+
+        <div class="card">
+          <h2>Every move</h2>
+          <ol id="review-moves" class="movelist movelist-review"></ol>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ---------------------------------------------------------- REPS --- -->
+  <section id="view-reps" class="view">
+    <div class="layout">
+      <div class="board-col">
+        <div class="board-stage">
+          <div id="repboard" class="board"></div>
+        </div>
+        <div id="rep-status" class="status"></div>
+      </div>
+
+      <aside class="side">
+        <div id="rep-setup" class="card">
+          <h2>Drill a repertoire</h2>
+          <p class="hint">The bot stays in book the whole way. You start with the
+             main lines and unlock the sidelines by getting them right twice.</p>
+
+          <label class="field">
+            <span>Opening</span>
+            <select id="rep-family"></select>
+          </label>
+          <label class="field">
+            <span>You play</span>
+            <select id="rep-color">
+              <option value="white" selected>White</option>
+              <option value="black">Black</option>
+            </select>
+          </label>
+          <p class="hint" id="rep-side-note"></p>
+          <button id="rep-start" class="btn btn-primary btn-block">Start drilling</button>
+        </div>
+
+        <div id="rep-live" class="card" hidden>
+          <h2 id="rep-title">Line</h2>
+          <div class="facts">
+            <dt>Opening</dt><dd id="rep-name">–</dd>
+            <dt>Length</dt><dd id="rep-len">–</dd>
+            <dt>How common</dt><dd id="rep-pop">–</dd>
+          </div>
+          <div id="rep-correction" class="rep-correction" hidden></div>
+          <div id="rep-result" hidden></div>
+          <div class="board-actions">
+            <button id="rep-next" class="btn btn-primary" hidden>Next line</button>
+            <button id="rep-quit" class="btn btn-quiet">Stop drilling</button>
+          </div>
+        </div>
+
+        <div id="rep-progress" class="card" hidden>
+          <h2>Your progress</h2>
+          <div class="bar"><div id="rep-bar"></div></div>
+          <p class="hint" id="rep-progress-text"></p>
+          <div class="rep-filters" role="group" aria-label="Which lines to show">
+            <button class="chip is-on" data-scope="all">All</button>
+            <button class="chip" data-scope="todo">To learn</button>
+            <button class="chip" data-scope="known">Known</button>
+          </div>
+          <p class="hint" id="rep-filter-note"></p>
+          <ol id="rep-lines" class="rep-lines"></ol>
+          <button id="rep-reset" class="btn btn-quiet">Reset this repertoire</button>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+</main>
+
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

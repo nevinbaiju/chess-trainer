@@ -1,0 +1,75 @@
+services:
+  chess-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chess-trainer
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # A LiteLLM gateway bound to 127.0.0.1 on the host cannot be reached
+      # through `host.containers.internal` — that address is the bridge
+      # gateway, not loopback. Joining the gateway's own network (see the
+      # bottom of this file) and addressing it by service name does work.
+      - LITELLM_URL=${LITELLM_URL:-http://litellm:4000}
+      - COACH_MODEL=${COACH_MODEL:-chess-coach}
+
+      - CHESS_DB=/data/chess.db
+
+      # The Maia checkpoint is baked into the image, so nothing needs fetching
+      # at startup. Without this, huggingface_hub still makes a HEAD request to
+      # revalidate its cache and startup depends on the network for no reason.
+      - HF_HUB_OFFLINE=1
+
+      # Sampling temperature for the opponent. THE most important knob here.
+      # At 0 Maia plays the *modal* move of its rating band, which is
+      # materially stronger than that band actually plays — it is why the
+      # Lichess "maia1100" bot performs around 1500. 1.0 reproduces the real
+      # spread of human choices, blunders included.
+      - OPPONENT_TEMPERATURE=${OPPONENT_TEMPERATURE:-1.0}
+
+      # Depth 16 reviews a 40-move game in roughly a minute on two threads.
+      # Going deeper does not change the verdict on a 600-level mistake.
+      - REVIEW_DEPTH=${REVIEW_DEPTH:-16}
+      - STOCKFISH_THREADS=${STOCKFISH_THREADS:-2}
+      - STOCKFISH_HASH_MB=${STOCKFISH_HASH_MB:-256}
+
+      # Beginner-calibrated win% curve. lichess ships -0.00368208, fitted on
+      # 2300+ rated games; its own author noted the right value approaches
+      # -0.002 as rating falls. See app/eval.py.
+      - CHESS_WIN_PCT_K=${CHESS_WIN_PCT_K:--0.002}
+    volumes:
+      - ${CHESS_DATA:-./data/chess-trainer}:/data:z
+      - /etc/localtime:/etc/localtime:ro
+    dns:
+      # Podman creates a compose network with isolate=true, which blocks
+      # container -> host-LAN traffic. If your DNS resolver lives on the LAN it
+      # is unreachable from in here, and aardvark-dns times out forwarding to
+      # it. Public resolvers avoid that; the only outside names this resolves
+      # are api.chess.com and lichess.org. Override with DNS_SERVERS, or delete
+      # the block entirely if your setup does not need it.
+      - ${DNS_PRIMARY:-1.1.1.1}
+      - ${DNS_SECONDARY:-8.8.8.8}
+    # Stockfish will happily eat every core it is given during a review, and
+    # this is usually not the only thing on the box.
+    cpus: ${CHESS_CPUS:-3.0}
+    ports:
+      - "127.0.0.1:5020:5020"
+    networks:
+      - llm
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:5020/healthz',timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 90s   # Maia's checkpoint load plus Stockfish warmup
+      retries: 3
+
+networks:
+  # The network your LiteLLM gateway is already on, joined so the coach can
+  # reach it by service name. Set LITELLM_NETWORK in .env to match; create an
+  # empty one with `podman network create litellm_default` if you run LiteLLM
+  # some other way.
+  llm:
+    name: ${LITELLM_NETWORK:-litellm_default}
+    external: true

@@ -1,0 +1,8 @@
+# Web layer
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.27
+
+# Chess logic. Also pulled in by maia3, pinned here because we depend on it
+# directly (PGN parsing, UCI transport, attack maps).
+chess>=1.11.2

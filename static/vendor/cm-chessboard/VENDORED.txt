@@ -1,0 +1,2 @@
+cm-chessboard 8.14.0 — MIT — https://github.com/shaack/cm-chessboard
+Vendored (not npm-installed) so the app has no build step and no CDN dependency at runtime.
