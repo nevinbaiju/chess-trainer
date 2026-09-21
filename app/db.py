@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS puzzles (
     fen     TEXT NOT NULL,           -- position BEFORE the opponent's first move
     moves   TEXT NOT NULL,           -- UCI; [0] is the opponent's, then alternating
     rating  INTEGER,                 -- stored but not used to select; see ROADMAP
-    themes  TEXT NOT NULL            -- space separated, lichess vocabulary
+    themes  TEXT NOT NULL,           -- space separated, lichess vocabulary
+    bookmarked INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS puzzles_rating ON puzzles(rating);
 
@@ -114,6 +115,7 @@ CREATE TABLE IF NOT EXISTS puzzle_attempts (
     served_at TEXT NOT NULL,
     solved    INTEGER,               -- NULL = served but not finished
     wrong     INTEGER NOT NULL DEFAULT 0,
+    hints     INTEGER NOT NULL DEFAULT 0,
     -- How far through the solution they are. Starts at 1: index 0 is the
     -- opponent's move, already on the board. Server-authoritative, so the
     -- client cannot advance itself past a move it did not find.
@@ -161,6 +163,8 @@ class Database:
         ("games", "player_rating", "INTEGER"),
         ("games", "opponent_rating", "INTEGER"),
         ("chesscom_archives", "filters", "TEXT"),
+        ("puzzle_attempts", "hints", "INTEGER NOT NULL DEFAULT 0"),
+        ("puzzles", "bookmarked", "INTEGER NOT NULL DEFAULT 0"),
     )
 
     def _rekey_line_progress(self) -> None:
@@ -350,6 +354,39 @@ class Database:
         self.conn.commit()
         return served_at
 
+    def add_puzzle_hint(self, puzzle_id: str, served_at: str, level: int) -> None:
+        """Hints are counted, not free. A solve with one is still a solve, but
+        it is not the same as finding it, and the tally has to say so."""
+        self.conn.execute(
+            "UPDATE puzzle_attempts SET hints=MAX(hints, ?) "
+            "WHERE puzzle_id=? AND served_at=?",
+            (level, puzzle_id, served_at),
+        )
+        self.conn.commit()
+
+    def set_bookmark(self, puzzle_id: str, on: bool) -> None:
+        self.conn.execute(
+            "UPDATE puzzles SET bookmarked=? WHERE id=?", (1 if on else 0, puzzle_id))
+        self.conn.commit()
+
+    def bookmarks(self) -> list[sqlite3.Row]:
+        """Kept puzzles, newest attempt first, with how it went last time."""
+        return self.conn.execute(
+            """SELECT p.*, a.motif, a.solved, a.wrong, a.hints, a.served_at
+               FROM puzzles p
+               LEFT JOIN puzzle_attempts a ON a.puzzle_id = p.id
+                    AND a.served_at = (SELECT MAX(served_at) FROM puzzle_attempts
+                                       WHERE puzzle_id = p.id)
+               WHERE p.bookmarked = 1
+               ORDER BY a.served_at DESC"""
+        ).fetchall()
+
+    def abandon_open_puzzles(self) -> None:
+        """Close anything half-played, so a replay is not shadowed by it."""
+        self.conn.execute(
+            "UPDATE puzzle_attempts SET solved=0 WHERE solved IS NULL")
+        self.conn.commit()
+
     def open_attempt(self, puzzle_id: str) -> sqlite3.Row | None:
         """The unfinished attempt at this puzzle, if there is one."""
         return self.conn.execute(
@@ -360,7 +397,7 @@ class Database:
     def current_puzzle(self) -> sqlite3.Row | None:
         """The puzzle in front of the player, so a refresh does not lose it."""
         return self.conn.execute(
-            """SELECT a.*, p.fen, p.moves, p.rating, p.themes
+            """SELECT a.*, p.fen, p.moves, p.rating, p.themes, p.bookmarked
                FROM puzzle_attempts a JOIN puzzles p ON p.id = a.puzzle_id
                WHERE a.solved IS NULL ORDER BY a.served_at DESC LIMIT 1"""
         ).fetchone()
@@ -393,6 +430,10 @@ class Database:
         ).fetchall()
         return {r["motif"]: {"tried": r["tried"], "solved": int(r["solved"] or 0)}
                 for r in rows}
+
+    def bookmark_count(self) -> int:
+        return int(self.conn.execute(
+            "SELECT COUNT(*) FROM puzzles WHERE bookmarked=1").fetchone()[0])
 
     def archive_etag(self, url: str, filters: str) -> str | None:
         """The stored tag, but only if the month was read with these filters.

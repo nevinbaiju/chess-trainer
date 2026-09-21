@@ -553,3 +553,16 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
 #cc-error { color: var(--mistake); }
 #stats-scope { margin: -.2rem 0 .6rem; }
 .src { color: var(--ink-soft); font-size: .72rem; }
+
+/* The puzzle lists have no ECO column, so they must not inherit the reps grid
+   that reserves one — the empty 2.6rem column squeezes the name until it wraps
+   mid-word ("allowe / d pin"). */
+#pz-score-list li, #pz-bookmark-list li { grid-template-columns: 1fr auto; }
+#pz-score-list .rep-nm, #pz-bookmark-list .rep-nm { overflow-wrap: normal; }
+
+/* Puzzle replay controls, shown once the solution has been played out. */
+.replay { margin: .6rem 0; }
+.replay .board-actions { margin: .3rem 0; }
+#pz-ply-label { font-variant-numeric: tabular-nums; }
+#pz-bookmark-list li { cursor: pointer; }
+#pz-bookmark-list li:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }

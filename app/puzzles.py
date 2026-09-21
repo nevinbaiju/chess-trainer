@@ -87,3 +87,25 @@ def your_plies(moves: list[str]) -> list[int]:
 def is_solved(moves: list[str], played: int) -> bool:
     """Has the player made every move the solution asks for?"""
     return played >= len(moves)
+
+
+def solution_line(fen: str, moves: list[str]) -> list[dict]:
+    """Every position the solution passes through.
+
+    Handing the front end a FEN per ply means it can animate the line and then
+    step back and forth through it without needing any chess rules of its own —
+    the board only ever sets a position it was given.
+    """
+    board, _ = opening_position(fen, moves)
+    out = []
+    for index, uci in enumerate(moves[1:]):
+        move = chess.Move.from_uci(uci)
+        san = board.san(move)
+        board.push(move)
+        out.append({
+            "uci": uci,
+            "san": san,
+            "fen": board.fen(),
+            "yours": index % 2 == 0,     # the solution starts with your move
+        })
+    return out

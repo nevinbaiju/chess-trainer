@@ -142,3 +142,117 @@ def test_the_solvers_colour_does_not_change_when_they_solve_it():
     # What the payload reports has to stay the solver's colour throughout.
     replay, _ = opening_position(fen, moves)
     assert replay.turn == solver
+
+
+# --------------------------------------------------------------------------
+# Hints, disclosure and the replay line
+# --------------------------------------------------------------------------
+
+
+def test_the_solution_line_carries_a_position_for_every_ply():
+    """So the front end can animate it and step through without needing any
+    chess rules of its own."""
+    from app.puzzles import solution_line
+
+    fen = "1r4k1/5p1p/5Pp1/3B3P/3n2P1/P3r3/2p3K1/1R6 w - - 0 45"
+    moves = "b1b8 e3e8 b8e8".split()
+    line = solution_line(fen, moves)
+
+    assert [s["uci"] for s in line] == moves[1:]
+    assert [s["yours"] for s in line] == [True, False], \
+        "the solution starts with the solver's move, then alternates"
+    assert all(s["san"] and s["fen"] for s in line)
+
+    board = chess.Board(line[-1]["fen"])          # every FEN must be legal
+    assert board.is_valid()
+
+
+def test_the_line_starts_where_the_player_was_left():
+    from app.puzzles import solution_line
+
+    fen = "1r4k1/5p1p/5Pp1/3B3P/3n2P1/P3r3/2p3K1/1R6 w - - 0 45"
+    moves = "b1b8 e3e8 b8e8".split()
+    shown, _ = opening_position(fen, moves)
+    first = chess.Board(solution_line(fen, moves)[0]["fen"])
+
+    replay = shown.copy()
+    replay.push(chess.Move.from_uci(moves[1]))
+    assert replay.fen() == first.fen()
+
+
+def test_hints_are_recorded_so_a_solve_with_one_is_not_called_clean(tmp_path):
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    db.conn.execute(
+        "INSERT INTO puzzles (id, fen, moves, rating, themes) VALUES "
+        "('p1', ?, 'e2e4 e7e5', 900, 'hangingPiece')", (chess.Board().fen(),))
+    served = db.record_puzzle_served("p1", "hung_piece", "hangingPiece")
+    assert db.current_puzzle()["hints"] == 0
+
+    db.add_puzzle_hint("p1", served, 1)
+    assert db.current_puzzle()["hints"] == 1
+    db.add_puzzle_hint("p1", served, 2)
+    assert db.current_puzzle()["hints"] == 2
+    # A later, weaker hint must not walk the count backwards.
+    db.add_puzzle_hint("p1", served, 1)
+    assert db.current_puzzle()["hints"] == 2
+
+
+def test_a_bookmark_survives_and_can_be_listed(tmp_path):
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    db.conn.execute(
+        "INSERT INTO puzzles (id, fen, moves, rating, themes) VALUES "
+        "('p1', ?, 'e2e4 e7e5', 900, 'fork')", (chess.Board().fen(),))
+    db.record_puzzle_served("p1", "allowed_fork", "fork")
+    assert db.bookmark_count() == 0
+
+    db.set_bookmark("p1", True)
+    assert db.bookmark_count() == 1
+    assert [b["id"] for b in db.bookmarks()] == ["p1"]
+
+    db.set_bookmark("p1", False)
+    assert db.bookmarks() == []
+
+
+def test_replaying_a_puzzle_does_not_leave_two_open_attempts(tmp_path):
+    """Otherwise current_puzzle() returns whichever sorted first and the board
+    shows one puzzle while the server scores another."""
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    for pid in ("p1", "p2"):
+        db.conn.execute(
+            "INSERT INTO puzzles (id, fen, moves, rating, themes) VALUES "
+            "(?, ?, 'e2e4 e7e5', 900, 'fork')", (pid, chess.Board().fen()))
+    db.record_puzzle_served("p1", "allowed_fork", "fork")
+    db.abandon_open_puzzles()
+    db.record_puzzle_served("p2", "allowed_fork", "fork")
+
+    open_rows = db.conn.execute(
+        "SELECT COUNT(*) FROM puzzle_attempts WHERE solved IS NULL").fetchone()[0]
+    assert open_rows == 1
+    assert db.current_puzzle()["puzzle_id"] == "p2"
+
+
+def test_the_live_puzzle_row_carries_every_column_of_both_tables(tmp_path):
+    """current_puzzle() selects named columns rather than *, so a column added
+    to `puzzles` later goes missing here — and the endpoint 500s on a lookup
+    that no unit test of the payload alone would catch. It did, once."""
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    db.conn.execute(
+        "INSERT INTO puzzles (id, fen, moves, rating, themes) VALUES "
+        "('p1', ?, 'e2e4 e7e5', 900, 'fork')", (chess.Board().fen(),))
+    db.record_puzzle_served("p1", "allowed_fork", "fork")
+
+    row = db.current_puzzle()
+    have = set(row.keys())
+    for table in ("puzzles", "puzzle_attempts"):
+        for column in (c[1] for c in db.conn.execute(f"PRAGMA table_info({table})")):
+            if column == "id":
+                continue          # joined in as puzzle_id
+            assert column in have, f"current_puzzle() does not select {table}.{column}"

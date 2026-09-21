@@ -204,13 +204,42 @@
           <h2 id="pz-title">Find the best move</h2>
           <div class="facts">
             <dt>You play</dt><dd id="pz-side">–</dd>
-            <dt>Moves to find</dt><dd id="pz-progress">–</dd>
+            <dt>Length</dt>
+            <dd><button id="pz-show-length" class="linkish">show how many moves</button>
+                <span id="pz-progress" hidden></span></dd>
+            <dt>Kind</dt>
+            <dd><button id="pz-show-type" class="linkish">reveal what kind</button>
+                <span id="pz-type" hidden></span></dd>
           </div>
+
+          <div class="board-actions">
+            <button id="pz-hint" class="btn btn-quiet">Hint</button>
+            <button id="pz-bookmark" class="btn btn-quiet" aria-pressed="false">☆ Keep</button>
+          </div>
+
           <div id="pz-result" hidden></div>
+
+          <div id="pz-replay" class="replay" hidden>
+            <p class="hint">Step through it.</p>
+            <div class="board-actions">
+              <button id="pz-first" class="btn btn-quiet">«</button>
+              <button id="pz-prev" class="btn btn-quiet">‹ Prev</button>
+              <button id="pz-next-ply" class="btn btn-quiet">Next ›</button>
+              <button id="pz-replay-again" class="btn btn-quiet">Play it again</button>
+            </div>
+            <p class="hint" id="pz-ply-label"></p>
+          </div>
+
           <div class="board-actions">
             <button id="pz-next" class="btn btn-primary">Next puzzle</button>
-            <button id="pz-giveup" class="btn btn-quiet">Show me</button>
+            <button id="pz-giveup" class="btn btn-quiet">Show solution</button>
           </div>
+        </div>
+
+        <div id="pz-bookmarks" class="card" hidden>
+          <h2>Kept puzzles</h2>
+          <p class="hint">Bookmarked to come back to. Click one to play it again.</p>
+          <ol id="pz-bookmark-list" class="rep-lines"></ol>
         </div>
 
         <div id="pz-scores" class="card" hidden>

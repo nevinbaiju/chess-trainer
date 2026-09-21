@@ -1693,6 +1693,7 @@ async function loadPuzzles() {
   $("pz-scores").hidden = !d.ready
   if (!d.ready) return
   renderPuzzleScores(d.scores)
+  loadBookmarks().catch(() => {})
   if (!state.puzzle) await nextPuzzle()
 }
 
@@ -1725,13 +1726,29 @@ async function nextPuzzle() {
   }
 }
 
-function applyPuzzle(p) {
+function applyPuzzle(p, keepDisclosures) {
+  const fresh = !keepDisclosures && state.puzzle?.id !== p.id
   state.puzzle = p
   const board = ensurePuzzleBoard()
   board.setPosition(p.fen, true)
   board.setOrientation(p.you_play === "black" ? COLOR.black : COLOR.white)
   board.removeArrows()
+  board.removeMarkers()
   board.removeLegalMovesMarkers()   // the last move leaves its own behind
+
+  if (fresh) {
+    // Everything you can ask for is asked for again on a new puzzle: a hint
+    // that stayed revealed would answer the next one for free.
+    state.hintLevel = 0
+    state.replayPly = null
+    showDisclosure("pz-show-length", "pz-progress", false)
+    showDisclosure("pz-show-type", "pz-type", false)
+    $("pz-replay").hidden = true
+    $("pz-result").hidden = true
+  }
+  $("pz-hint").textContent = state.hintLevel === 0 ? "Hint" : "Where to?"
+  $("pz-hint").hidden = p.status !== "playing" || state.hintLevel >= 2
+  setBookmarkButton(p.bookmarked)
 
   $("pz-side").textContent = p.you_play
   $("pz-progress").textContent = `${p.moves_found} of ${p.moves_total}`
@@ -1768,7 +1785,66 @@ function showPuzzleResult(p) {
       Solution: <b>${(p.solution || []).join(" ")}</b>${
         p.rating ? ` · lichess rating ${p.rating}` : ""}</p>`
   $("pz-result").hidden = false
+  showDisclosure("pz-show-length", "pz-progress", true)
+  showDisclosure("pz-show-type", "pz-type", true)
+  $("pz-type").textContent = motifLabel(p.motif)
   loadPuzzles().catch(() => {})
+  if (p.line?.length) animateSolution(p).catch((e) => console.error(e))
+}
+
+/* Length and kind are both hidden until asked for. "Two moves to find" is a
+   real clue — it rules out every one-move answer — and so is "this is a
+   back-rank mate". Offered rather than shown, and both count as a hint. */
+function showDisclosure(buttonId, valueId, revealed) {
+  $(buttonId).hidden = revealed
+  $(valueId).hidden = !revealed
+}
+
+function setBookmarkButton(on) {
+  const b = $("pz-bookmark")
+  b.textContent = on ? "★ Kept" : "☆ Keep"
+  b.setAttribute("aria-pressed", on ? "true" : "false")
+}
+
+/* Walk the solution slowly enough to watch. Each position comes from the
+   server, so stepping needs no chess rules here. */
+async function animateSolution(p, msPerPly = 900) {
+  const board = ensurePuzzleBoard()
+  board.removeMarkers()
+  board.setPosition(p.start_fen, true)
+  await new Promise((r) => setTimeout(r, 450))
+  for (const step of p.line) {
+    board.setPosition(step.fen, true)
+    board.removeMarkers()
+    board.addMarker(MARKER_TYPE.framePrimary, step.uci.slice(0, 2))
+    board.addMarker(MARKER_TYPE.framePrimary, step.uci.slice(2, 4))
+    $("pz-ply-label").textContent = `${step.yours ? "you" : "they"} play ${step.san}`
+    await new Promise((r) => setTimeout(r, msPerPly))
+  }
+  state.replayPly = p.line.length - 1
+  $("pz-replay").hidden = false
+  renderPly()
+}
+
+function renderPly() {
+  const p = state.puzzle
+  if (!p?.line) return
+  const i = state.replayPly
+  const board = ensurePuzzleBoard()
+  board.removeMarkers()
+  if (i < 0) {
+    board.setPosition(p.start_fen, true)
+    $("pz-ply-label").textContent = "the position you were given"
+  } else {
+    const step = p.line[i]
+    board.setPosition(step.fen, true)
+    board.addMarker(MARKER_TYPE.framePrimary, step.uci.slice(0, 2))
+    board.addMarker(MARKER_TYPE.framePrimary, step.uci.slice(2, 4))
+    $("pz-ply-label").textContent =
+      `${i + 1} of ${p.line.length} — ${step.yours ? "you" : "they"} play ${step.san}`
+  }
+  $("pz-prev").disabled = i < 0
+  $("pz-next-ply").disabled = i >= p.line.length - 1
 }
 
 function puzzleMoveInput(event) {
@@ -1828,4 +1904,92 @@ $("pz-next").addEventListener("click", () => { state.puzzle = null; nextPuzzle()
 $("pz-giveup").addEventListener("click", async () => {
   if (!state.puzzle) return
   applyPuzzle(await api(`/api/puzzles/${state.puzzle.id}/give_up`, {method: "POST"}))
+})
+
+/* Hint in two taps: which piece, then where it goes. "Which piece" is most of
+   the work at this level, and being handed the whole move teaches nothing. */
+$("pz-hint").addEventListener("click", async () => {
+  if (!state.puzzle || state.puzzle.status !== "playing") return
+  const level = (state.hintLevel || 0) + 1
+  try {
+    const h = await api(`/api/puzzles/${state.puzzle.id}/hint?level=${level}`,
+                        {method: "POST"})
+    const board = ensurePuzzleBoard()
+    board.removeMarkers()
+    board.addMarker(MARKER_TYPE.framePrimary, h.squares[0])
+    if (h.squares[1]) board.addMarker(MARKER_TYPE.circlePrimary, h.squares[1])
+    state.hintLevel = h.level
+    state.puzzle.hints = h.hints
+    $("pz-hint").textContent = "Where to?"
+    $("pz-hint").hidden = h.level >= 2
+    $("pz-status").textContent = h.level === 1
+      ? "That is the piece to move."
+      : "That is the move."
+  } catch (err) {
+    $("pz-status").textContent = err.message
+  }
+})
+
+$("pz-show-length").addEventListener("click", () => {
+  showDisclosure("pz-show-length", "pz-progress", true)
+})
+
+$("pz-show-type").addEventListener("click", async () => {
+  if (!state.puzzle) return
+  try {
+    const t = await api(`/api/puzzles/${state.puzzle.id}/reveal_type`, {method: "POST"})
+    $("pz-type").textContent = motifLabel(t.motif)
+    showDisclosure("pz-show-type", "pz-type", true)
+    $("pz-status").textContent = t.note || ""
+  } catch (err) {
+    $("pz-status").textContent = err.message
+  }
+})
+
+$("pz-bookmark").addEventListener("click", async () => {
+  if (!state.puzzle) return
+  const on = !state.puzzle.bookmarked
+  await api(`/api/puzzles/${state.puzzle.id}/bookmark`, {
+    method: "POST", body: JSON.stringify({on}),
+  })
+  state.puzzle.bookmarked = on
+  setBookmarkButton(on)
+  loadBookmarks().catch(() => {})
+})
+
+$("pz-first").addEventListener("click", () => { state.replayPly = -1; renderPly() })
+$("pz-prev").addEventListener("click", () => {
+  state.replayPly = Math.max(-1, (state.replayPly ?? 0) - 1); renderPly()
+})
+$("pz-next-ply").addEventListener("click", () => {
+  const n = state.puzzle?.line?.length ?? 0
+  state.replayPly = Math.min(n - 1, (state.replayPly ?? -1) + 1); renderPly()
+})
+$("pz-replay-again").addEventListener("click", () => {
+  if (state.puzzle?.line) animateSolution(state.puzzle).catch(() => {})
+})
+
+async function loadBookmarks() {
+  const rows = await api("/api/puzzles/bookmarks")
+  $("pz-bookmarks").hidden = rows.length === 0
+  $("pz-bookmark-list").innerHTML = rows
+    .map((b) => {
+      const last = b.last
+        ? (b.last.solved ? "solved" : "missed") +
+          (b.last.hints ? ` · ${b.last.hints} hint${b.last.hints === 1 ? "" : "s"}` : "")
+        : "not tried"
+      return `<li data-id="${escapeHtml(b.id)}" tabindex="0" role="button">
+          <span class="rep-nm">${escapeHtml(motifLabel(b.motif) || "puzzle")}</span>
+          <span class="rep-streak">${escapeHtml(last)}</span>
+          <span class="rep-mv">${b.rating ? `lichess ${b.rating}` : ""}</span>
+        </li>`
+    })
+    .join("")
+}
+
+$("pz-bookmark-list").addEventListener("click", async (e) => {
+  const row = e.target.closest("li[data-id]")
+  if (!row) return
+  state.puzzle = null
+  applyPuzzle(await api(`/api/puzzles/${row.dataset.id}/retry`, {method: "POST"}))
 })

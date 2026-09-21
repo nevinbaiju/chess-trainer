@@ -36,7 +36,8 @@ from .motifs import GUARDABLE, facts_for_move
 from .deviation import analyse_deviation
 from .openings import BookMode, OpeningBook, book_move_for, deviation_ply
 from .puzzle_themes import MOTIF_THEMES
-from .puzzles import describe, opening_position, pick_motif, pick_theme
+from .puzzles import (describe, opening_position, pick_motif, pick_theme,
+                      solution_line)
 from .rating import Player, apply_offset, record_result, suggested_starting_elo
 from .reps import (
     MASTERY_STREAK,
@@ -146,6 +147,10 @@ class ImportChessCom(BaseModel):
 
 class PuzzleMove(BaseModel):
     uci: str
+
+
+class Bookmark(BaseModel):
+    on: bool = True
 
 
 class ResetReps(BaseModel):
@@ -1344,20 +1349,36 @@ def puzzle_payload(row, *, reveal: bool = False) -> dict:
         "moves_found": (played - 1 + 1) // 2,
         "moves_total": (len(moves)) // 2,
         "wrong": row["wrong"],
+        "hints": row["hints"],
         "rating": row["rating"],
+        "bookmarked": bool(row["bookmarked"]),
         "status": "playing",
     }
     if reveal:
         entry = describe(row["motif"])
+        unaided = row["wrong"] == 0 and row["hints"] == 0
         payload.update({
-            "status": "solved" if row["wrong"] == 0 else "solved_with_help",
-            "motif": row["motif"],
-            "theme": row["theme"],
-            "direction": entry.direction if entry else None,
-            "note": entry.note if entry else None,
+            "status": "solved" if unaided else "solved_with_help",
             "solution": moves[1:],
+            # Every position the solution passes through, so the front end can
+            # animate it and then step back and forth without needing any chess
+            # rules of its own.
+            "start_fen": opening_position(row["fen"], moves)[0].fen(),
+            "line": solution_line(row["fen"], moves),
         })
+        payload.update(type_payload(row))
     return payload
+
+
+def type_payload(row) -> dict:
+    """What kind of puzzle this is. Withheld until asked for, or until it ends."""
+    entry = describe(row["motif"])
+    return {
+        "motif": row["motif"],
+        "theme": row["theme"],
+        "direction": entry.direction if entry else None,
+        "note": entry.note if entry else None,
+    }
 
 
 @app.get("/api/puzzles")
@@ -1367,6 +1388,7 @@ async def puzzle_status():
         "total": db().puzzle_count(),
         "by_theme": counts,
         "scores": db().puzzle_scores(),
+        "bookmarks": db().bookmark_count(),
         "ready": db().puzzle_count() > 0,
     }
 
@@ -1434,6 +1456,84 @@ async def puzzle_move(puzzle_id: str, move_in: PuzzleMove):
         return payload
 
     db().advance_puzzle(puzzle_id, row["served_at"], played, wrong)
+    return puzzle_payload(db().current_puzzle())
+
+
+@app.post("/api/puzzles/{puzzle_id}/hint")
+async def puzzle_hint(puzzle_id: str, level: int = 1):
+    """Level 1 names the piece to move, level 2 adds where it goes.
+
+    Deliberately two steps: "which piece" is most of the work at this level,
+    and being handed the whole move teaches nothing. Both are counted — a solve
+    with a hint is still a solve, but it is not the same as finding it.
+    """
+    row = db().current_puzzle()
+    if row is None or row["puzzle_id"] != puzzle_id:
+        raise HTTPException(404, "That puzzle is not the one in progress")
+
+    expected = row["moves"].split()[row["played"]]
+    db().add_puzzle_hint(puzzle_id, row["served_at"], min(max(level, 1), 2))
+    squares = [expected[:2]] if level < 2 else [expected[:2], expected[2:4]]
+    return {"level": min(max(level, 1), 2), "squares": squares,
+            "hints": db().current_puzzle()["hints"]}
+
+
+@app.post("/api/puzzles/{puzzle_id}/reveal_type")
+async def puzzle_reveal_type(puzzle_id: str):
+    """Say what kind of puzzle it is without ending it.
+
+    Counted as a hint, because knowing it is a back-rank mate narrows the
+    search a great deal — but offered, because a pattern you cannot name is
+    hard to go looking for.
+    """
+    row = db().current_puzzle()
+    if row is None or row["puzzle_id"] != puzzle_id:
+        raise HTTPException(404, "That puzzle is not the one in progress")
+    db().add_puzzle_hint(puzzle_id, row["served_at"], 1)
+    return type_payload(row)
+
+
+@app.post("/api/puzzles/{puzzle_id}/bookmark")
+async def puzzle_bookmark(puzzle_id: str, spec: Bookmark):
+    if db().get_puzzle(puzzle_id) is None:
+        raise HTTPException(404, "No such puzzle")
+    db().set_bookmark(puzzle_id, spec.on)
+    return {"id": puzzle_id, "bookmarked": spec.on,
+            "total": db().bookmark_count()}
+
+
+@app.get("/api/puzzles/bookmarks")
+async def puzzle_bookmarks():
+    out = []
+    for row in db().bookmarks():
+        entry = describe(row["motif"]) if row["motif"] else None
+        out.append({
+            "id": row["id"],
+            "motif": row["motif"],
+            "rating": row["rating"],
+            "direction": entry.direction if entry else None,
+            "last": None if row["solved"] is None else {
+                "solved": bool(row["solved"]),
+                "wrong": row["wrong"],
+                "hints": row["hints"],
+            },
+        })
+    return out
+
+
+@app.post("/api/puzzles/{puzzle_id}/retry")
+async def puzzle_retry(puzzle_id: str):
+    """Serve a specific puzzle again — how a bookmark is replayed."""
+    puzzle = db().get_puzzle(puzzle_id)
+    if puzzle is None:
+        raise HTTPException(404, "No such puzzle")
+    previous = db().conn.execute(
+        "SELECT motif, theme FROM puzzle_attempts WHERE puzzle_id=? "
+        "ORDER BY served_at DESC LIMIT 1", (puzzle_id,)).fetchone()
+    motif = previous["motif"] if previous else "hung_piece"
+    theme = previous["theme"] if previous else pick_theme(motif, state["rng"])
+    db().abandon_open_puzzles()
+    db().record_puzzle_served(puzzle_id, motif, theme)
     return puzzle_payload(db().current_puzzle())
 
 
