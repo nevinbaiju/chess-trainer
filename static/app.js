@@ -1789,7 +1789,19 @@ function showPuzzleResult(p) {
   showDisclosure("pz-show-type", "pz-type", true)
   $("pz-type").textContent = motifLabel(p.motif)
   loadPuzzles().catch(() => {})
-  if (p.line?.length) animateSolution(p).catch((e) => console.error(e))
+
+  if (!p.line?.length) return
+  if (p.status === "gave_up") {
+    // The solution was asked for, so play it out.
+    animateSolution(p).catch((e) => console.error(e))
+  } else {
+    // It was found. You have just watched these moves go in one at a time;
+    // replaying them is time you did not ask for. Park the stepper at the end
+    // instead, so rewinding is there if you want to look again.
+    state.replayPly = p.line.length - 1
+    $("pz-replay").hidden = false
+    renderPly()
+  }
 }
 
 /* Length and kind are both hidden until asked for. "Two moves to find" is a

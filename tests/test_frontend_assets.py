@@ -179,3 +179,17 @@ def test_the_ios_icon_is_opaque():
             capture_output=True, text=True).stdout
         assert "none" not in corner and "0,0,0,0" not in corner, \
             f"top-left corner is transparent: {corner}"
+
+
+def test_a_solved_puzzle_does_not_replay_itself():
+    """You have just watched those moves go in one at a time. Re-animating them
+    is time the player did not ask for; the stepper is parked at the end
+    instead, so rewinding is available without being forced."""
+    js = (STATIC / "app.js").read_text()
+    body = js[js.index("function showPuzzleResult"):]
+    body = body[:body.index("\nfunction ")]
+    assert 'p.status === "gave_up"' in body, \
+        "the animation must be conditional on the solution having been shown"
+    animate = body.index("animateSolution")
+    guard = body.index('p.status === "gave_up"')
+    assert guard < animate, "the guard has to come before the call it guards"
