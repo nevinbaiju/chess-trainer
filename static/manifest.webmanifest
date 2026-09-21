@@ -1,0 +1,16 @@
+{
+  "name": "Chess Trainer",
+  "short_name": "Chess",
+  "description": "A chess opponent that plays like a human at your level, and a reviewer that explains why your moves were bad.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#7a5c3e",
+  "background_color": "#f6f5f2",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

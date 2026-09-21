@@ -112,3 +112,70 @@ def test_every_id_the_chesscom_code_touches_exists_in_the_page():
     section = js[js.index("chess.com --"):]
     for name in set(re.findall(r'\$\("([a-z0-9-]+)"\)', section)):
         assert f'id="{name}"' in html, f"app.js uses #{name}, which the page lacks"
+
+
+# --------------------------------------------------------------------------
+# Installable as an app
+# --------------------------------------------------------------------------
+
+
+def test_the_manifest_is_valid_and_complete():
+    import json
+
+    manifest = json.loads((STATIC / "manifest.webmanifest").read_text())
+    for field in ("name", "short_name", "start_url", "display",
+                  "theme_color", "background_color", "icons"):
+        assert manifest[field], f"manifest is missing {field}"
+    assert manifest["display"] == "standalone", "otherwise it opens in a browser tab"
+
+    sizes = {icon["sizes"] for icon in manifest["icons"]}
+    assert {"192x192", "512x512"} <= sizes, "Chrome requires both to offer install"
+    purposes = {icon.get("purpose") for icon in manifest["icons"]}
+    assert "maskable" in purposes, "Android crops a non-maskable icon into a circle"
+
+
+def test_every_icon_the_manifest_names_exists_at_the_size_it_claims():
+    """A manifest pointing at a missing icon fails installability silently."""
+    import json
+    import struct
+
+    manifest = json.loads((STATIC / "manifest.webmanifest").read_text())
+    for icon in manifest["icons"]:
+        path = STATIC / icon["src"][len("/static/"):]
+        assert path.exists(), f"manifest names {icon['src']}, which is not there"
+        header = path.read_bytes()[:24]
+        assert header[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name} is not a PNG"
+        width, height = struct.unpack(">II", header[16:24])
+        assert f"{width}x{height}" == icon["sizes"], (
+            f"{path.name} is {width}x{height}, manifest says {icon['sizes']}")
+
+
+def test_the_page_links_the_manifest_and_a_png_apple_icon():
+    """iOS ignores an SVG apple-touch-icon, which is why the home-screen icon
+    came out blank; it must be a PNG."""
+    html = (STATIC / "index.html").read_text()
+    assert 'rel="manifest"' in html
+    assert re.search(r'rel="apple-touch-icon" href="[^"]+\.png"', html), \
+        "apple-touch-icon must be a PNG"
+    assert 'name="mobile-web-app-capable"' in html, "the apple- prefix is deprecated"
+    assert (STATIC / "apple-touch-icon.png").exists()
+
+
+def test_the_ios_icon_is_opaque():
+    """iOS applies its own rounded mask and paints whatever is behind the icon
+    black, so transparent corners come out as black corners."""
+    from struct import unpack
+
+    data = (STATIC / "apple-touch-icon.png").read_bytes()
+    # IHDR colour type is the 10th byte of the header chunk data
+    colour_type = data[25]
+    alpha_channel = colour_type in (4, 6)
+    if alpha_channel:
+        # RGBA is fine as long as the corners are actually painted; check one.
+        import subprocess
+        corner = subprocess.run(
+            ["magick", str(STATIC / "apple-touch-icon.png"),
+             "-format", "%[pixel:p{2,2}]", "info:"],
+            capture_output=True, text=True).stdout
+        assert "none" not in corner and "0,0,0,0" not in corner, \
+            f"top-left corner is transparent: {corner}"
