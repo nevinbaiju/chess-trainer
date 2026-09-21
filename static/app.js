@@ -68,6 +68,7 @@ function showView(name) {
   // detail view *inside* that tab rather than a separate destination you can
   // get stranded in.
   if (name === "review" && !state.reviewGameId) showReviewList()
+  if (name === "puzzles") loadPuzzles().catch((e) => console.error(e))
   if (name === "reps" && !$("rep-family").options.length) loadFamilies().catch(console.error)
 }
 
@@ -1663,4 +1664,168 @@ document.querySelectorAll("#stats-scope .chip").forEach((chip) => {
       .forEach((c) => c.classList.toggle("is-on", c === chip))
     loadProgress().catch((e) => console.error(e))
   })
+})
+
+/* --------------------------------------------------------- puzzles -- */
+/* Drawn from whatever is costing the most games right now. The theme is never
+   shown before the attempt: naming it would hand over the answer, and for the
+   seven motifs whose mapping is inverted it would also be a lie — a fork puzzle
+   trains you to play forks, not to avoid them. It appears afterwards instead,
+   where it reads as feedback. */
+
+let puzzleBoard = null
+
+function ensurePuzzleBoard() {
+  if (!puzzleBoard) puzzleBoard = makeBoard($("puzzleboard"))
+  return puzzleBoard
+}
+
+async function loadPuzzles() {
+  let d
+  try {
+    d = await api("/api/puzzles")
+  } catch (err) {
+    return
+  }
+  state.puzzleStatus = d
+  $("pz-empty").hidden = d.ready
+  $("pz-card").hidden = !d.ready
+  $("pz-scores").hidden = !d.ready
+  if (!d.ready) return
+  renderPuzzleScores(d.scores)
+  if (!state.puzzle) await nextPuzzle()
+}
+
+function renderPuzzleScores(scores) {
+  const rows = Object.entries(scores || {})
+  $("pz-scores").hidden = false
+  $("pz-score-list").innerHTML = rows.length
+    ? rows
+        .sort((a, b) => b[1].tried - a[1].tried)
+        .map(([motif, s]) =>
+          `<li><span class="rep-nm">${escapeHtml(motifLabel(motif))}</span>
+             <span class="rep-streak">${s.solved}/${s.tried}</span></li>`)
+        .join("")
+    : '<li><span class="hint">Nothing solved yet.</span></li>'
+}
+
+function motifLabel(motif) {
+  return (motif || "").replace(/_/g, " ")
+}
+
+async function nextPuzzle() {
+  $("pz-next").disabled = true
+  $("pz-result").hidden = true
+  try {
+    applyPuzzle(await api("/api/puzzles/next", {method: "POST"}))
+  } catch (err) {
+    $("pz-status").textContent = err.message
+  } finally {
+    $("pz-next").disabled = false
+  }
+}
+
+function applyPuzzle(p) {
+  state.puzzle = p
+  const board = ensurePuzzleBoard()
+  board.setPosition(p.fen, true)
+  board.setOrientation(p.you_play === "black" ? COLOR.black : COLOR.white)
+  board.removeArrows()
+  board.removeLegalMovesMarkers()   // the last move leaves its own behind
+
+  $("pz-side").textContent = p.you_play
+  $("pz-progress").textContent = `${p.moves_found} of ${p.moves_total}`
+
+  if (p.status === "playing") {
+    $("pz-title").textContent = "Find the best move"
+    $("pz-status").textContent = p.last_move_wrong
+      ? "Not that one — try again."
+      : p.wrong > 0
+        ? "Keep going."
+        : "Your move."
+    setMoveInput(board, puzzleMoveInput, p.you_play === "black" ? COLOR.black : COLOR.white)
+  } else {
+    board.disableMoveInput()
+    showPuzzleResult(p)
+  }
+}
+
+function showPuzzleResult(p) {
+  const clean = p.status === "solved"
+  sound.play(clean ? "win" : "lose", 0.2)
+  $("pz-title").textContent = clean ? "Solved" : "Puzzle over"
+  $("pz-status").textContent = ""
+
+  // Only now is the theme named — as feedback, not as a hint.
+  $("pz-result").innerHTML = `
+    <div class="rep-verdict ${clean ? "is-pass" : "is-miss"}">
+      ${clean ? "Solved first time" : p.status === "gave_up" ? "Shown" : `Solved, ${p.wrong} wrong turn${p.wrong === 1 ? "" : "s"}`}
+    </div>
+    <p class="rep-explain">${escapeHtml(p.note || "")}</p>
+    <p class="hint">Chosen because <b>${escapeHtml(motifLabel(p.motif))}</b> is
+      one of your commonest mistakes${p.direction === "inverted"
+        ? " — this is that pattern from the winning side" : ""}.
+      Solution: <b>${(p.solution || []).join(" ")}</b>${
+        p.rating ? ` · lichess rating ${p.rating}` : ""}</p>`
+  $("pz-result").hidden = false
+  loadPuzzles().catch(() => {})
+}
+
+function puzzleMoveInput(event) {
+  const board = ensurePuzzleBoard()
+  if (event.type === INPUT_EVENT_TYPE.moveInputStarted) {
+    const targets = puzzleTargets(event.squareFrom)
+    if (!targets.length) return false
+    board.addLegalMovesMarkers(targets)
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.moveInputCanceled ||
+      event.type === INPUT_EVENT_TYPE.moveInputFinished) {
+    board.removeLegalMovesMarkers()
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.validateMoveInput) {
+    const plain = event.squareFrom + event.squareTo
+    const legal = state.puzzle.legal_moves
+    if (legal.includes(plain)) { submitPuzzleMove(plain); return true }
+    const promos = legal.filter((m) => m.startsWith(plain) && m.length === 5)
+    if (promos.length) { submitPuzzleMove(plain + "q"); return true }
+    return false
+  }
+  return true
+}
+
+function puzzleTargets(from) {
+  if (!state.puzzle || state.puzzle.status !== "playing") return []
+  const seen = new Set()
+  const out = []
+  for (const uci of state.puzzle.legal_moves) {
+    if (!uci.startsWith(from)) continue
+    const to = uci.slice(2, 4)
+    if (seen.has(to)) continue
+    seen.add(to)
+    out.push({from, to, promotion: uci.length === 5 ? uci[4] : undefined})
+  }
+  return out
+}
+
+async function submitPuzzleMove(uci) {
+  ensurePuzzleBoard().disableMoveInput()
+  try {
+    const p = await api(`/api/puzzles/${state.puzzle.id}/move`, {
+      method: "POST",
+      body: JSON.stringify({uci}),
+    })
+    sound.play(p.last_move_wrong ? "lose" : "move", 0)
+    applyPuzzle(p)
+  } catch (err) {
+    $("pz-status").textContent = err.message
+    applyPuzzle(state.puzzle)
+  }
+}
+
+$("pz-next").addEventListener("click", () => { state.puzzle = null; nextPuzzle() })
+$("pz-giveup").addEventListener("click", async () => {
+  if (!state.puzzle) return
+  applyPuzzle(await api(`/api/puzzles/${state.puzzle.id}/give_up`, {method: "POST"}))
 })

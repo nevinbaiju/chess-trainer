@@ -35,6 +35,8 @@ from .eval import eval_win_percent
 from .motifs import GUARDABLE, facts_for_move
 from .deviation import analyse_deviation
 from .openings import BookMode, OpeningBook, book_move_for, deviation_ply
+from .puzzle_themes import MOTIF_THEMES
+from .puzzles import describe, opening_position, pick_motif, pick_theme
 from .rating import Player, apply_offset, record_result, suggested_starting_elo
 from .reps import (
     MASTERY_STREAK,
@@ -140,6 +142,10 @@ class ImportChessCom(BaseModel):
     #: ~30-60s of engine time, so this is a deliberate budget, not a limit.
     review: int = Field(20, ge=0, le=200)
     time_classes: list[str] = Field(default_factory=lambda: ["rapid"])
+
+
+class PuzzleMove(BaseModel):
+    uci: str
 
 
 class ResetReps(BaseModel):
@@ -1305,6 +1311,141 @@ async def _end_rep(game_id: int, rep: Rep) -> dict:
         ),
     }
     return rep_payload(db().get_game(game_id), rep, extra)
+
+
+# --------------------------------------------------------------------------
+# Puzzles
+# --------------------------------------------------------------------------
+
+
+def puzzle_payload(row, *, reveal: bool = False) -> dict:
+    """What the client is allowed to know.
+
+    The solution and the theme are withheld until the puzzle is over. Sending
+    either would answer the question: the prompt is "find the best move", and a
+    client that has been told "this is a fork" has been told the move.
+    """
+    moves = row["moves"].split()
+    board, first = opening_position(row["fen"], moves)
+    # The solver's colour is fixed by the position they were handed, not by
+    # whose turn it happens to be now. Recomputing it from the live board flips
+    # it on the last move and turns the board round at the moment of solving.
+    solver = "white" if board.turn == chess.WHITE else "black"
+    played = row["played"]
+    for uci in moves[1:played]:
+        board.push(chess.Move.from_uci(uci))
+
+    payload = {
+        "id": row["puzzle_id"] if "puzzle_id" in row.keys() else row["id"],
+        "fen": board.fen(),
+        "opponent_move": moves[played - 1],
+        "you_play": solver,
+        "legal_moves": [m.uci() for m in board.legal_moves],
+        "moves_found": (played - 1 + 1) // 2,
+        "moves_total": (len(moves)) // 2,
+        "wrong": row["wrong"],
+        "rating": row["rating"],
+        "status": "playing",
+    }
+    if reveal:
+        entry = describe(row["motif"])
+        payload.update({
+            "status": "solved" if row["wrong"] == 0 else "solved_with_help",
+            "motif": row["motif"],
+            "theme": row["theme"],
+            "direction": entry.direction if entry else None,
+            "note": entry.note if entry else None,
+            "solution": moves[1:],
+        })
+    return payload
+
+
+@app.get("/api/puzzles")
+async def puzzle_status():
+    counts = db().puzzles_by_theme()
+    return {
+        "total": db().puzzle_count(),
+        "by_theme": counts,
+        "scores": db().puzzle_scores(),
+        "ready": db().puzzle_count() > 0,
+    }
+
+
+@app.post("/api/puzzles/next")
+async def next_puzzle():
+    """Draw a puzzle for whichever weakness is currently costing most games."""
+    if not db().puzzle_count():
+        raise HTTPException(
+            409, "No puzzles stored yet — run scripts/ingest_puzzles.py")
+
+    open_row = db().current_puzzle()
+    if open_row is not None:
+        return puzzle_payload(open_row)          # resume rather than lose it
+
+    stats = await get_stats()
+    motif = pick_motif(stats.get("weaknesses", []), state["rng"])
+    if motif is None:
+        # Nothing reviewed yet, so there is no ranking to draw from. Hanging
+        # pieces is the right default: it is the commonest error at this level
+        # by a distance, in every set of games measured so far.
+        motif = "hung_piece"
+
+    for candidate in (motif, *MOTIF_THEMES):
+        theme = pick_theme(candidate, state["rng"])
+        row = db().random_puzzle(theme) if theme else None
+        if row is not None:
+            motif = candidate
+            break
+    else:
+        raise HTTPException(409, "Every stored puzzle has been served already")
+
+    served_at = db().record_puzzle_served(row["id"], motif, theme)
+    return puzzle_payload(db().current_puzzle())
+
+
+@app.post("/api/puzzles/{puzzle_id}/move")
+async def puzzle_move(puzzle_id: str, move_in: PuzzleMove):
+    row = db().current_puzzle()
+    if row is None or row["puzzle_id"] != puzzle_id:
+        raise HTTPException(404, "That puzzle is not the one in progress")
+
+    moves = row["moves"].split()
+    played, wrong = row["played"], row["wrong"]
+    expected = moves[played]
+
+    if move_in.uci != expected:
+        # Wrong: counted once, then the position is handed straight back. Same
+        # bargain as a rep — you may finish it, but it no longer counts clean.
+        db().advance_puzzle(puzzle_id, row["served_at"], played, wrong + 1)
+        again = db().current_puzzle()
+        payload = puzzle_payload(again)
+        payload["last_move_wrong"] = True
+        return payload
+
+    played += 1                                   # yours
+    if played < len(moves):
+        played += 1                               # and the reply that follows
+
+    if played >= len(moves):
+        db().advance_puzzle(puzzle_id, row["served_at"], played, wrong)
+        done = db().current_puzzle()
+        payload = puzzle_payload(done, reveal=True)
+        db().finish_puzzle(puzzle_id, row["served_at"], wrong == 0, wrong)
+        return payload
+
+    db().advance_puzzle(puzzle_id, row["served_at"], played, wrong)
+    return puzzle_payload(db().current_puzzle())
+
+
+@app.post("/api/puzzles/{puzzle_id}/give_up")
+async def puzzle_give_up(puzzle_id: str):
+    row = db().current_puzzle()
+    if row is None or row["puzzle_id"] != puzzle_id:
+        raise HTTPException(404, "That puzzle is not the one in progress")
+    payload = puzzle_payload(row, reveal=True)
+    payload["status"] = "gave_up"
+    db().finish_puzzle(puzzle_id, row["served_at"], False, row["wrong"] + 1)
+    return payload
 
 
 # --------------------------------------------------------------------------

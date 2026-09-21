@@ -43,6 +43,7 @@
   <nav class="tabs">
     <button class="tab is-active" data-view="play">Play</button>
     <button class="tab" data-view="reps">Reps</button>
+    <button class="tab" data-view="puzzles">Puzzles</button>
     <button class="tab" data-view="review">Review</button>
   </nav>
 </header>
@@ -180,6 +181,43 @@
           </div>
           <div id="g-line-warning" class="warn" hidden></div>
           <ol id="movelist" class="movelist"></ol>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------- PUZZLES --- -->
+  <section id="view-puzzles" class="view">
+    <div class="layout">
+      <div>
+        <div id="puzzleboard" class="board"></div>
+        <p class="status" id="pz-status"></p>
+      </div>
+      <aside>
+        <div id="pz-empty" class="card" hidden>
+          <h2>No puzzles yet</h2>
+          <p class="hint">Run <code>scripts/ingest_puzzles.py</code> once to pull
+             a slice of the Lichess CC0 puzzle database into the app.</p>
+        </div>
+
+        <div id="pz-card" class="card" hidden>
+          <h2 id="pz-title">Find the best move</h2>
+          <div class="facts">
+            <dt>You play</dt><dd id="pz-side">–</dd>
+            <dt>Moves to find</dt><dd id="pz-progress">–</dd>
+          </div>
+          <div id="pz-result" hidden></div>
+          <div class="board-actions">
+            <button id="pz-next" class="btn btn-primary">Next puzzle</button>
+            <button id="pz-giveup" class="btn btn-quiet">Show me</button>
+          </div>
+        </div>
+
+        <div id="pz-scores" class="card" hidden>
+          <h2>Where these come from</h2>
+          <p class="hint">Puzzles are drawn from whatever is costing you most
+             games right now, in proportion — so the mix shifts as you improve.</p>
+          <ol id="pz-score-list" class="rep-lines"></ol>
         </div>
       </aside>
     </div>

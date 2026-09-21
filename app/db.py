@@ -93,6 +93,35 @@ CREATE TABLE IF NOT EXISTS chesscom_archives (
     filters    TEXT                        -- time classes this month was read with
 );
 
+-- A local slice of the Lichess CC0 puzzle database. Not rating-filtered: any
+-- puzzle carrying the theme is fair game, so the only sampling is a cap per
+-- theme to keep the table small.
+CREATE TABLE IF NOT EXISTS puzzles (
+    id      TEXT PRIMARY KEY,        -- lichess puzzle id
+    fen     TEXT NOT NULL,           -- position BEFORE the opponent's first move
+    moves   TEXT NOT NULL,           -- UCI; [0] is the opponent's, then alternating
+    rating  INTEGER,                 -- stored but not used to select; see ROADMAP
+    themes  TEXT NOT NULL            -- space separated, lichess vocabulary
+);
+CREATE INDEX IF NOT EXISTS puzzles_rating ON puzzles(rating);
+
+-- One row per puzzle served, so nothing repeats and progress per motif can be
+-- counted. `motif` is ours, `theme` is the lichess one it was drawn from.
+CREATE TABLE IF NOT EXISTS puzzle_attempts (
+    puzzle_id TEXT NOT NULL REFERENCES puzzles(id) ON DELETE CASCADE,
+    motif     TEXT NOT NULL,
+    theme     TEXT NOT NULL,
+    served_at TEXT NOT NULL,
+    solved    INTEGER,               -- NULL = served but not finished
+    wrong     INTEGER NOT NULL DEFAULT 0,
+    -- How far through the solution they are. Starts at 1: index 0 is the
+    -- opponent's move, already on the board. Server-authoritative, so the
+    -- client cannot advance itself past a move it did not find.
+    played    INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (puzzle_id, served_at)
+);
+CREATE INDEX IF NOT EXISTS puzzle_attempts_motif ON puzzle_attempts(motif);
+
 CREATE TABLE IF NOT EXISTS explanations (
     game_id  INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     ply      INTEGER NOT NULL,
@@ -277,6 +306,93 @@ class Database:
         return self.conn.execute(
             "SELECT * FROM games ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
+
+    # -- puzzles -----------------------------------------------------------
+
+    def puzzle_count(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM puzzles").fetchone()[0])
+
+    def puzzles_by_theme(self) -> dict[str, int]:
+        rows = self.conn.execute("SELECT themes FROM puzzles").fetchall()
+        counts: dict[str, int] = {}
+        for r in rows:
+            for theme in r["themes"].split():
+                counts[theme] = counts.get(theme, 0) + 1
+        return counts
+
+    def random_puzzle(self, theme: str) -> sqlite3.Row | None:
+        """An unseen puzzle carrying this theme, chosen at random.
+
+        `themes` is a space separated list, so the LIKE has to match a whole
+        word — without the padding, "pin" would also match "pinnedPiece" style
+        neighbours and, worse, any theme that merely contains it.
+        """
+        return self.conn.execute(
+            """SELECT * FROM puzzles
+               WHERE ' ' || themes || ' ' LIKE ?
+                 AND id NOT IN (SELECT puzzle_id FROM puzzle_attempts)
+               ORDER BY RANDOM() LIMIT 1""",
+            (f"% {theme} %",),
+        ).fetchone()
+
+    def get_puzzle(self, puzzle_id: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM puzzles WHERE id=?", (puzzle_id,)
+        ).fetchone()
+
+    def record_puzzle_served(self, puzzle_id: str, motif: str, theme: str) -> str:
+        served_at = now()
+        self.conn.execute(
+            """INSERT INTO puzzle_attempts (puzzle_id, motif, theme, served_at)
+               VALUES (?, ?, ?, ?)""",
+            (puzzle_id, motif, theme, served_at),
+        )
+        self.conn.commit()
+        return served_at
+
+    def open_attempt(self, puzzle_id: str) -> sqlite3.Row | None:
+        """The unfinished attempt at this puzzle, if there is one."""
+        return self.conn.execute(
+            "SELECT * FROM puzzle_attempts WHERE puzzle_id=? AND solved IS NULL "
+            "ORDER BY served_at DESC LIMIT 1", (puzzle_id,)
+        ).fetchone()
+
+    def current_puzzle(self) -> sqlite3.Row | None:
+        """The puzzle in front of the player, so a refresh does not lose it."""
+        return self.conn.execute(
+            """SELECT a.*, p.fen, p.moves, p.rating, p.themes
+               FROM puzzle_attempts a JOIN puzzles p ON p.id = a.puzzle_id
+               WHERE a.solved IS NULL ORDER BY a.served_at DESC LIMIT 1"""
+        ).fetchone()
+
+    def advance_puzzle(self, puzzle_id: str, served_at: str, played: int,
+                       wrong: int) -> None:
+        self.conn.execute(
+            "UPDATE puzzle_attempts SET played=?, wrong=? "
+            "WHERE puzzle_id=? AND served_at=?",
+            (played, wrong, puzzle_id, served_at),
+        )
+        self.conn.commit()
+
+    def finish_puzzle(self, puzzle_id: str, served_at: str, solved: bool,
+                      wrong: int) -> None:
+        self.conn.execute(
+            "UPDATE puzzle_attempts SET solved=?, wrong=? "
+            "WHERE puzzle_id=? AND served_at=?",
+            (1 if solved else 0, wrong, puzzle_id, served_at),
+        )
+        self.conn.commit()
+
+    def puzzle_scores(self) -> dict[str, dict]:
+        """Solved / tried per motif, for the "is this working" line."""
+        rows = self.conn.execute(
+            """SELECT motif, COUNT(*) AS tried,
+                      SUM(CASE WHEN solved=1 THEN 1 ELSE 0 END) AS solved
+               FROM puzzle_attempts WHERE solved IS NOT NULL
+               GROUP BY motif"""
+        ).fetchall()
+        return {r["motif"]: {"tried": r["tried"], "solved": int(r["solved"] or 0)}
+                for r in rows}
 
     def archive_etag(self, url: str, filters: str) -> str | None:
         """The stored tag, but only if the month was read with these filters.
