@@ -8,3 +8,6 @@ __pycache__/
 data/*.db
 data/chess-trainer/
 .pytest_cache/
+
+# local symlink to task-system context
+.brain
