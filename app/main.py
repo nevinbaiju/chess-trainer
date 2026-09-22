@@ -29,8 +29,9 @@ from pydantic import BaseModel, Field
 
 from .chesscom import ChessCom, convert as convert_game, wanted
 from .coach import Coach
-from .corrections import (FORGIVEN, Blunder, blunders_in, pgn_to_here,
-                          position_before, rank, verdict)
+from .corrections import (EXPLORE_SLACK, FORGIVEN, Blunder, blunders_in,
+                          game_curve, pgn_to_here, position_before, rank,
+                          verdict)
 from .db import Database, now
 from .engines import Stockfish
 from .eval import eval_win_percent
@@ -159,6 +160,12 @@ class ImportChessCom(BaseModel):
 
 class PuzzleMove(BaseModel):
     uci: str
+
+
+class ExploreLine(BaseModel):
+    """Everything played since the blunder position, from that position."""
+
+    moves: list[str] = Field(default_factory=list, max_length=80)
 
 
 class Bookmark(BaseModel):
@@ -1668,10 +1675,17 @@ def find_blunder(game_id: int, ply: int) -> Blunder | None:
                  if b.game_id == game_id and b.ply == ply), None)
 
 
+def _review_of(game_id: int) -> dict | None:
+    """The stored review, already deserialised by the database layer."""
+    row = db().get_review(game_id)
+    return row["data"] if row else None
+
+
 def correction_payload(blunder: Blunder, attempt, *, reveal: bool = False,
                        extra: dict | None = None) -> dict:
     board = chess.Board(blunder.fen)
     marks = db().correction_bookmarks()
+    review = _review_of(blunder.game_id)
     payload = {
         "game_id": blunder.game_id,
         "ply": blunder.ply,
@@ -1691,6 +1705,9 @@ def correction_payload(blunder: Blunder, attempt, *, reveal: bool = False,
         "wrong": attempt["wrong"] if attempt else 0,
         "hints": attempt["hints"] if attempt else 0,
         "status": "playing",
+        # What actually happened from here, so the replay has something to be
+        # drawn against rather than a number to be told.
+        "game_curve": game_curve(review, blunder) if review else [],
     }
     if reveal:
         # What you actually played is withheld until the end: it is the one
@@ -1915,6 +1932,133 @@ async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
         "SELECT * FROM correction_attempts WHERE game_id=? AND ply=? AND served_at=?",
         (game_id, ply, attempt["served_at"])).fetchone(),
         reveal=result["held"], extra={"status": status, "attempt": result})
+
+
+@app.post("/api/corrections/{game_id}/{ply}/explore")
+async def correction_explore(game_id: int, ply: int, line: ExploreLine):
+    """Play the position on, and keep score against the game that really happened.
+
+    This is the half of the exercise that finding one move does not cover. You
+    played a move that holds — but at 550 the next question is whether you can
+    still be holding it eight moves later, and the original game already
+    answers that for the move you actually chose. So both lines are drawn on
+    one graph from the same origin.
+
+    Both sides are yours to move, because there is no opponent here and
+    guessing one would be inventing evidence. Only *your* moves are judged:
+    being corrected on a move you played for the opponent would be scoring you
+    on a choice you were not making.
+    """
+    _touch_engine()
+    blunder = find_blunder(game_id, ply)
+    if blunder is None:
+        raise HTTPException(410, "That blunder is no longer in the review")
+
+    board = chess.Board(blunder.fen)
+    hero = blunder.color
+    assert board.turn == hero, "a blunder position is always the player's to move"
+    played: list[chess.Move] = []
+    for uci in line.moves:
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            raise HTTPException(400, f"{uci!r} is not a move")
+        if move not in board.legal_moves:
+            raise HTTPException(400, f"{uci} is not legal in this line")
+        played.append(move)
+        board.push(move)
+
+    curve = await _explore_curve(blunder, played)
+    payload = {
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "yours": board.turn == hero,
+        "legal_moves": [m.uci() for m in board.legal_moves],
+        "san": _san_line(chess.Board(blunder.fen), played),
+        "curve": curve,
+        "over": board.is_game_over(),
+    }
+    if board.is_game_over():
+        payload["outcome"] = board.result()
+
+    # Judge only the move just played, and only if it was the player's own.
+    # The blunder position is always theirs to move, so their moves are the
+    # odd ones in the line.
+    if played and len(played) % 2 == 1:
+        payload["judgment"] = await _explore_judgment(blunder, played)
+    return payload
+
+
+def _san_line(board: chess.Board, moves: list[chess.Move]) -> list[str]:
+    out = []
+    for move in moves:
+        out.append(board.san(move))
+        board.push(move)
+    return out
+
+
+async def _explore_curve(blunder: Blunder, played: list[chess.Move]) -> list[dict]:
+    """Win% after every move of the replayed line, from the player's side.
+
+    Evaluated position by position rather than carried forward from the last
+    analysis, because the engine's cache makes a re-walk nearly free and the
+    alternative is a curve that drifts from what the engine would say now.
+    """
+    white = blunder.color == chess.WHITE
+    board = chess.Board(blunder.fen)
+    start = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
+    out = [{
+        "ply": 0,
+        "san": None,
+        "win": round(eval_win_percent(start[0].score.pov(white)), 1) if start else 50.0,
+    }]
+    for index, move in enumerate(played, start=1):
+        san = board.san(move)
+        board.push(move)
+        lines = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
+        out.append({
+            "ply": index,
+            "san": san,
+            "win": round(eval_win_percent(lines[0].score.pov(white)), 1) if lines else 50.0,
+            # The blunder position is the player's to move, so odd plies are theirs.
+            "yours": index % 2 == 1,
+        })
+    return out
+
+
+async def _explore_judgment(blunder: Blunder, played: list[chess.Move]) -> dict:
+    """How much the player's last move gave away, and what beat it.
+
+    The threshold is looser than the one the correction itself is judged by:
+    this is exploration rather than an exam, and stopping someone on every
+    inaccuracy makes playing a position out unbearable.
+    """
+    white = blunder.color == chess.WHITE
+    board = chess.Board(blunder.fen)
+    for move in played[:-1]:
+        board.push(move)
+
+    best_lines = await state["stockfish"].analyse(
+        board, depth=CORRECTION_DEPTH, multipv=1)
+    after = board.copy()
+    after.push(played[-1])
+    got_lines = await state["stockfish"].analyse(
+        after, depth=CORRECTION_DEPTH, multipv=1)
+    if not best_lines or not got_lines:
+        return {"ok": True}
+
+    best_win = eval_win_percent(best_lines[0].score.pov(white))
+    got_win = eval_win_percent(got_lines[0].score.pov(white))
+    lost = max(0.0, best_win - got_win)
+    best_move = best_lines[0].best_move
+    return {
+        "ok": lost < EXPLORE_SLACK,
+        "lost": round(lost, 1),
+        "san": board.san(played[-1]),
+        "best_san": board.san(best_move) if best_move else None,
+        "best_uci": best_move.uci() if best_move else None,
+        "best_line": best_lines[0].pv_san(board, limit=4),
+    }
 
 
 @app.post("/api/corrections/{game_id}/{ply}/hint")

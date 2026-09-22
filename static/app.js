@@ -2134,11 +2134,22 @@ function applyFix(c) {
   board.removeLegalMovesMarkers()
   if (fresh) {
     state.fixHint = 0
+    state.fixLine = null
     $("fx-result").hidden = true
     $("fx-key").hidden = true
     $("fx-copy-box").hidden = true
+    $("fx-explore").hidden = true
+    $("fx-explore-note").hidden = true
   }
+  // The "what happened" curve is worth seeing before you have solved anything:
+  // it is the reason this position is in the queue.
+  renderFixGraph()
   if (c.status === "playing") board.removeArrows()
+
+  // Which position this is, readable from the DOM: handy for a deep link and
+  // for anything driving the page from outside it.
+  $("fx-card").dataset.game = c.game_id
+  $("fx-card").dataset.ply = c.ply
 
   const when = (c.played_at || "").slice(0, 10)
   $("fx-intro").textContent =
@@ -2220,6 +2231,12 @@ function showFixResult(c) {
        · Engine: <b>${escapeHtml(a.engine_best || "?")}</b>${
          a.engine_line?.length ? ` — ${escapeHtml(a.engine_line.join(" "))}` : ""}</p>`
   $("fx-result").hidden = false
+
+  // Only once something holds is there a second line worth drawing. Seed it
+  // with the move that held — or, if they gave up, with the engine's.
+  const seed = held ? (a.uci || c.best_uci) : c.best_uci
+  if (seed) startFixExplore(seed)
+
   loadFix().catch(() => {})
 }
 
@@ -2413,4 +2430,182 @@ window.state_legal = () => state.fix?.legal_moves || []
 $("pz-copy-fen").addEventListener("click", async () => {
   if (!state.puzzle) return
   await copyText(state.puzzle.fen, $("pz-copy-fen"), "FEN copied")
+})
+
+/* --------------------------------------------- fix: the comparison graph -- */
+/* Finding one move that holds is half the exercise. The other half is whether
+   you are still holding it eight moves later — and the original game already
+   answers that for the move you actually chose, so both lines go on one graph
+   from the same origin and you can see them come apart. */
+
+const FXG = {w: 600, h: 140, padT: 10, padB: 18, padX: 6}
+
+const fxX = (ply, span) => FXG.padX + (span < 1 ? 0 : (ply / span) * (FXG.w - 2 * FXG.padX))
+const fxY = (win) => FXG.padT + (1 - win / 100) * (FXG.h - FXG.padT - FXG.padB)
+
+function fxPath(points, span) {
+  return points
+    .map((p, i) => `${i ? "L" : "M"}${fxX(p.ply, span).toFixed(1)},${fxY(p.win).toFixed(1)}`)
+    .join(" ")
+}
+
+function renderFixGraph() {
+  const card = $("fx-graph-card")
+  const game = state.fix?.game_curve || []
+  const mine = state.fixLine?.curve || []
+  if (game.length < 2 && mine.length < 2) { card.hidden = true; return }
+  card.hidden = false
+
+  // One x-axis for both lines, so "further along" means the same thing on each.
+  const span = Math.max(1, game.length - 1, mine.length - 1)
+  const base = fxY(50)
+
+  const marks = game
+    .filter((p) => p.judgment && p.yours)
+    .map((p) => `<circle class="fxg-mark" cx="${fxX(p.ply, span).toFixed(1)}"
+                   cy="${fxY(p.win).toFixed(1)}" r="5"/>`)
+    .join("")
+
+  const ticks = []
+  for (let i = 0; i <= span; i += span > 20 ? 4 : 2) {
+    ticks.push(`<text class="g-tick" x="${fxX(i, span).toFixed(1)}" y="${FXG.h - 5}">${i}</text>`)
+  }
+
+  $("fx-graph").innerHTML = `
+    <svg viewBox="0 0 ${FXG.w} ${FXG.h}" preserveAspectRatio="none" class="g-svg"
+         role="img" aria-label="Your winning chances: the game as played against the line you are replaying">
+      <line class="g-base" x1="${FXG.padX}" y1="${base}" x2="${FXG.w - FXG.padX}" y2="${base}"/>
+      <text class="g-axis" x="${FXG.w - FXG.padX}" y="${FXG.padT + 8}" text-anchor="end">winning</text>
+      <text class="g-axis" x="${FXG.w - FXG.padX}" y="${base - 4}" text-anchor="end">equal</text>
+      <text class="g-axis" x="${FXG.w - FXG.padX}" y="${FXG.h - FXG.padB - 3}" text-anchor="end">losing</text>
+      ${game.length > 1 ? `<path class="fxg-was" d="${fxPath(game, span)}"/>` : ""}
+      ${marks}
+      ${mine.length > 1 ? `<path class="fxg-now" d="${fxPath(mine, span)}"/>` : ""}
+      ${mine.length ? `<circle class="fxg-head" cx="${fxX(mine[mine.length - 1].ply, span).toFixed(1)}"
+            cy="${fxY(mine[mine.length - 1].win).toFixed(1)}" r="4"/>` : ""}
+      ${ticks.join("")}
+    </svg>`
+}
+
+/* ------------------------------------------------ fix: playing it on -- */
+
+function startFixExplore(firstMove) {
+  // Seed the replayed line with the move that held, so the two curves diverge
+  // at exactly the ply where the original game did.
+  state.fixLine = {moves: firstMove ? [firstMove] : [], curve: [], fen: null, busy: false}
+  $("fx-explore").hidden = false
+  refreshFixExplore().catch((e) => console.error(e))
+}
+
+async function refreshFixExplore() {
+  const line = state.fixLine
+  const c = state.fix
+  if (!line || !c || line.busy) return
+  line.busy = true
+  $("fx-status").textContent = "Thinking…"
+  try {
+    const d = await api(`/api/corrections/${c.game_id}/${c.ply}/explore`, {
+      method: "POST",
+      body: JSON.stringify({moves: line.moves}),
+    })
+    line.curve = d.curve
+    line.fen = d.fen
+    line.legal = d.legal_moves
+    line.san = d.san
+    line.over = d.over
+    renderFixGraph()
+    showExploreLine(d)
+    const board = ensureFixBoard()
+    board.setPosition(d.fen, true)
+    board.removeArrows()
+    if (d.judgment && !d.judgment.ok && d.judgment.best_uci) {
+      board.addArrow(ARROW_TYPE.success,
+        d.judgment.best_uci.slice(0, 2), d.judgment.best_uci.slice(2, 4))
+    }
+    // Both sides are yours to move: there is no opponent here, and inventing
+    // one would be putting moves in its mouth.
+    if (!d.over) setMoveInput(board, fixExploreInput, undefined)
+    else board.disableMoveInput()
+  } catch (err) {
+    $("fx-status").textContent = err.message
+  } finally {
+    line.busy = false
+    if (!state.fixLine?.over) $("fx-status").textContent = ""
+  }
+}
+
+function showExploreLine(d) {
+  const moves = d.san || []
+  const start = state.fix.move_number
+  const parts = moves.map((san, i) => {
+    const num = state.fix.you_play === "white"
+      ? (i % 2 === 0 ? `${start + i / 2}. ` : "")
+      : (i % 2 === 0 ? `${start + Math.floor(i / 2)}... ` : "")
+    const mine = i % 2 === 0
+    return `${num}${mine ? `<b>${escapeHtml(san)}</b>` : escapeHtml(san)}`
+  })
+  $("fx-explore-line").innerHTML = parts.join(" ") || "<span class='hint'>Your move.</span>"
+
+  const note = $("fx-explore-note")
+  const j = d.judgment
+  if (d.over) {
+    note.className = "rep-correction"
+    note.innerHTML = `<div class="rep-verdict is-miss">Game over</div>
+      <p class="rep-explain">${escapeHtml(d.outcome || "")} — no more moves here.</p>`
+    note.hidden = false
+  } else if (j && !j.ok) {
+    note.className = "rep-correction"
+    note.innerHTML = `
+      <div class="rep-verdict is-miss">That gives back ${j.lost}%</div>
+      <p class="rep-explain">${escapeHtml(j.san)} costs about ${j.lost} points of
+         winning chances${j.best_san ? `; ${escapeHtml(j.best_san)} holds more` : ""}.
+         ${j.best_line?.length ? `The line runs ${escapeHtml(j.best_line.join(" "))}.` : ""}</p>
+      <p class="hint">Take it back, or play on and watch the green line fall.</p>`
+    note.hidden = false
+  } else {
+    note.hidden = true
+  }
+}
+
+function fixExploreInput(event) {
+  const board = ensureFixBoard()
+  if (event.type === INPUT_EVENT_TYPE.moveInputStarted) {
+    const targets = (state.fixLine?.legal || [])
+      .filter((m) => m.startsWith(event.squareFrom))
+      .map((m) => ({from: m.slice(0, 2), to: m.slice(2, 4)}))
+    if (!targets.length) return false
+    board.addLegalMovesMarkers(targets)
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.moveInputCanceled ||
+      event.type === INPUT_EVENT_TYPE.moveInputFinished) {
+    board.removeLegalMovesMarkers()
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.validateMoveInput) {
+    const plain = event.squareFrom + event.squareTo
+    const legal = state.fixLine?.legal || []
+    const uci = legal.includes(plain)
+      ? plain
+      : legal.find((m) => m.startsWith(plain) && m.length === 5) && plain + "q"
+    if (!uci) return false
+    state.fixLine.moves.push(uci)
+    refreshFixExplore().catch((e) => console.error(e))
+    return true
+  }
+  return true
+}
+
+$("fx-undo").addEventListener("click", () => {
+  const line = state.fixLine
+  if (!line || line.moves.length <= 1) return   // never back past the move that held
+  line.moves.pop()
+  refreshFixExplore().catch((e) => console.error(e))
+})
+
+$("fx-reset").addEventListener("click", () => {
+  const line = state.fixLine
+  if (!line) return
+  line.moves = line.moves.slice(0, 1)
+  refreshFixExplore().catch((e) => console.error(e))
 })

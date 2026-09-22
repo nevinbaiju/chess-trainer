@@ -587,3 +587,29 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
             font-family: ui-monospace, monospace; margin: .5rem 0;
             border: 1px solid var(--border); border-radius: 6px; padding: .5rem;
             background: var(--bg); color: var(--ink); }
+
+/* Fix tab: the two-line comparison. The game that happened is faded and
+   dashed — it is context, not the thing you are doing — and the line you are
+   playing now is solid and on top of it. */
+#fx-graph-wrap { position: relative; }
+#fx-graph .g-svg { width: 100%; height: 140px; display: block; }
+.fxg-was {
+  fill: none; stroke: var(--blunder); stroke-width: 1.6; opacity: .38;
+  stroke-dasharray: 4 3; stroke-linejoin: round;
+}
+.fxg-now { fill: none; stroke: var(--good); stroke-width: 2.4; stroke-linejoin: round; }
+.fxg-head { fill: var(--good); }
+.fxg-mark { fill: var(--blunder); opacity: .45; }
+.fx-legend {
+  display: flex; gap: 1rem; flex-wrap: wrap; font-size: .74rem;
+  color: var(--ink-soft); margin-top: .4rem;
+}
+.fx-legend span { display: inline-flex; align-items: center; gap: .35rem; }
+/* Sized here rather than inherited: .k is only given dimensions inside
+   .arrow-key, so a swatch outside it renders as nothing at all. The colours
+   match the two paths exactly, faded dash included. */
+.fx-legend .k { width: 16px; height: 0; border-top: 2px solid; border-radius: 0; }
+.fx-legend .k-was { border-top-style: dashed; color: var(--blunder); opacity: .55; }
+.fx-legend .k-now { border-top-width: 3px; color: var(--good); }
+.fx-h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em;
+         color: var(--ink-soft); margin: .9rem 0 .3rem; }

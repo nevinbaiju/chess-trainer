@@ -147,3 +147,56 @@ def pgn_to_here(game_row, ply: int) -> str:
 
     exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
     return game.accept(exporter)
+
+
+#: How far past the blunder the comparison runs. Long enough for the damage to
+#: show, short enough that the replayed line is not a sliver at one end of it.
+CURVE_PLIES = 30
+
+#: Win% a move may give away during the replay before it is worth interrupting
+#: for. Looser than FORGIVEN: this is exploration, not an exam, and stopping
+#: someone on every inaccuracy makes playing the position out unbearable.
+EXPLORE_SLACK = 10.0
+
+
+def hero_win(move: dict, hero_white: bool) -> float:
+    """One reviewed move's win% from the player's side.
+
+    A forced mate is not "88% winning", which is what the win% curve returns
+    once mate is flattened to its centipawn ceiling, so a decided position is
+    pinned to the top or the bottom of the graph instead.
+    """
+    mate = move.get("mate_white")
+    if mate is not None:
+        return 100.0 if (mate > 0) == hero_white else 0.0
+    white = float(move.get("win_white", 50.0))
+    return white if hero_white else 100.0 - white
+
+
+def game_curve(review: dict, blunder: Blunder, limit: int = CURVE_PLIES) -> list[dict]:
+    """What actually happened, from the blunder onward, in the player's win%.
+
+    Point zero is the position *before* the blunder, so this curve and the one
+    the player draws by replaying share an origin and can be read against each
+    other. Everything after it is the game as it really went.
+    """
+    hero_white = blunder.color == chess.WHITE
+    moves = review.get("moves", [])
+    start = next((i for i, m in enumerate(moves) if m["ply"] == blunder.ply), None)
+    if start is None:
+        return []
+
+    out = [{
+        "ply": 0,
+        "san": None,
+        "win": round(float(moves[start].get("win_before", 50.0)), 1),
+    }]
+    for offset, move in enumerate(moves[start:start + limit], start=1):
+        out.append({
+            "ply": offset,
+            "san": move.get("san"),
+            "win": round(hero_win(move, hero_white), 1),
+            "judgment": move.get("judgment"),
+            "yours": (move.get("color") == "white") == hero_white,
+        })
+    return out

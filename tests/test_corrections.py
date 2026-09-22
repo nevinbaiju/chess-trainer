@@ -200,3 +200,88 @@ def test_background_jobs_stand_aside_for_any_engine_use_not_just_playing():
     backfill = source[source.index("async def _run_backfill"):]
     backfill = backfill[:backfill.index("\n@app")]
     assert "_game_in_progress() or _engine_in_demand()" in backfill
+
+
+# --------------------------------------------------------------------------
+# The comparison curve
+# --------------------------------------------------------------------------
+
+
+def review_with(moves):
+    return {"moves": moves}
+
+
+def move_at(ply, *, win_white, color="white", judgment=None, win_before=None, mate=None):
+    return {"ply": ply, "san": f"m{ply}", "color": color, "win_white": win_white,
+            "mate_white": mate, "judgment": judgment,
+            "win_before": win_before if win_before is not None else 50.0}
+
+
+def a_blunder(ply=10, color=chess.WHITE):
+    from app.corrections import Blunder
+    return Blunder(game_id=1, ply=ply, fen=chess.STARTING_FEN, played_san="x",
+                   played_uci="e2e4", best_uci=None, best_san=None, win_lost=40.0,
+                   color=color, motifs=(), opening=None, played_at=None)
+
+
+def test_the_curve_starts_before_the_blunder():
+    """Both lines have to share an origin or they cannot be read against each
+    other: point zero is the position as it stood before the move went in."""
+    from app.corrections import game_curve
+
+    review = review_with([move_at(10, win_white=20.0, win_before=80.0, judgment="blunder")])
+    curve = game_curve(review, a_blunder())
+    assert curve[0] == {"ply": 0, "san": None, "win": 80.0}
+    assert curve[1]["win"] == 20.0
+    assert curve[1]["yours"] is True
+
+
+def test_the_curve_is_from_the_players_side():
+    """win_white is White's point of view; a Black player's graph must be the
+    mirror of it, or every one of their good moves reads as a collapse."""
+    from app.corrections import game_curve
+
+    review = review_with([move_at(10, win_white=30.0, win_before=65.0, color="black")])
+    curve = game_curve(review, a_blunder(color=chess.BLACK))
+    assert curve[1]["win"] == 70.0
+    assert curve[1]["yours"] is True
+
+
+def test_a_forced_mate_is_drawn_as_decided():
+    """Flattened to centipawns a mate reads as about 88% winning, which is both
+    wrong and less useful than what the engine actually said."""
+    from app.corrections import hero_win
+
+    assert hero_win({"mate_white": 3, "win_white": 88.0}, True) == 100.0
+    assert hero_win({"mate_white": 3, "win_white": 88.0}, False) == 0.0
+    assert hero_win({"mate_white": -2, "win_white": 12.0}, True) == 0.0
+
+
+def test_the_opponents_moves_are_not_marked_as_yours():
+    from app.corrections import game_curve
+
+    review = review_with([
+        move_at(10, win_white=20.0, win_before=80.0, judgment="blunder"),
+        move_at(11, win_white=19.0, color="black"),
+    ])
+    curve = game_curve(review, a_blunder())
+    assert [p["yours"] for p in curve[1:]] == [True, False]
+
+
+def test_a_curve_stops_at_the_cap():
+    """A game can run another sixty plies; drawn in full the replayed line is a
+    sliver at one end of the graph."""
+    from app.corrections import CURVE_PLIES, game_curve
+
+    review = review_with([
+        move_at(10 + i, win_white=50.0, color="white" if i % 2 == 0 else "black")
+        for i in range(CURVE_PLIES + 20)
+    ])
+    curve = game_curve(review, a_blunder())
+    assert len(curve) == CURVE_PLIES + 1      # plus the shared origin
+
+
+def test_a_blunder_the_review_no_longer_contains_yields_nothing():
+    from app.corrections import game_curve
+
+    assert game_curve(review_with([move_at(99, win_white=50.0)]), a_blunder()) == []

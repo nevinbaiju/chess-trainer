@@ -44,7 +44,7 @@
     <button class="tab is-active" data-view="play">Play</button>
     <button class="tab" data-view="reps">Reps</button>
     <button class="tab" data-view="puzzles">Puzzles</button>
-    <button class="tab" data-view="fix">Fix</button>
+    <button class="tab" data-view="fix">Fix my blunder</button>
     <button class="tab" data-view="review">Review</button>
   </nav>
 </header>
@@ -273,6 +273,21 @@
           <span><i class="k k-warning"></i>what you played now</span>
         </div>
         <p class="status" id="fx-status"></p>
+
+        <div id="fx-graph-card" class="card graph-card" hidden>
+          <h2>What happened, and what you just played</h2>
+          <p class="hint">Your winning chances from this position on. The faded
+             line is the game as it really went; the solid one is the line you
+             are playing now.</p>
+          <div id="fx-graph-wrap">
+            <div id="fx-graph"></div>
+            <div id="fx-graph-tip" class="graph-tip" hidden></div>
+          </div>
+          <div class="fx-legend">
+            <span><i class="k k-was"></i>what happened</span>
+            <span><i class="k k-now"></i>your line</span>
+          </div>
+        </div>
       </div>
       <aside>
         <div id="fx-empty" class="card" hidden>
@@ -302,6 +317,19 @@
           <textarea id="fx-copy-box" class="copy-box" readonly hidden
                     aria-label="Copy this text"></textarea>
           <div id="fx-result" hidden></div>
+
+          <div id="fx-explore" hidden>
+            <h3 class="fx-h3">Play it on</h3>
+            <p class="hint">Move for both sides. Only your own moves are
+               judged — the other side's are yours to choose, not to get
+               wrong.</p>
+            <p id="fx-explore-line" class="rep-line"></p>
+            <div id="fx-explore-note" hidden></div>
+            <div class="board-actions">
+              <button id="fx-undo" class="btn btn-quiet">Take back</button>
+              <button id="fx-reset" class="btn btn-quiet">Back to the blunder</button>
+            </div>
+          </div>
 
           <div class="board-actions">
             <button id="fx-next" class="btn btn-primary">Next blunder</button>
