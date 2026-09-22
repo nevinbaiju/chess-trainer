@@ -16,18 +16,20 @@ performs around 1500. Stockfish is never the opponent, only the judge. And the
 win% curve is refitted for beginners, so a mistake is called a mistake when it
 actually costs you the game.
 
-![The trainer](docs/img/play.png)
+![Drilling an opening against the bot](docs/img/opening.png)
 
 ---
 
-## Play a human-like bot
+## Explore and drill openings
 
-An opponent that plays the bad-but-popular moves you will actually meet, at a
-strength the app tunes by *measured* score rather than by trusting a rating
-label. Pick an opening and drill it three ways — stay in book, follow one line
-then improvise, or play from move one. Hanging a piece stops the game and
-offers the move back, because the mistake is worth catching while you still
-remember choosing it.
+Search 3,810 catalogued openings, pick a line, and play it three ways — stay in
+book, follow the line then improvise, or play from move one with no book at
+all. Hanging a piece stops the game and offers the move back, because the
+mistake is worth catching while you still remember choosing it.
+
+Reps turn the same catalogue into a curriculum: every rep is a complete
+variation ending on *your* move, a wrong move is explained and taken back
+rather than ending the exercise, and a line only banks when you play it clean.
 
 ![Opening reps](docs/img/reps.png)
 
