@@ -161,6 +161,14 @@ class MoveReview:
         }
 
 
+#: Bumped whenever the serialised review gains or changes a field. A review
+#: stored under an older version is not wrong, it is just missing something —
+#: mate scores arrived this way, and every game analysed before that shows a
+#: forced mate as "88% winning" until it is analysed again. The stamp is what
+#: lets the app find those instead of leaving the player to notice.
+REVIEW_VERSION = 2
+
+
 @dataclass
 class GameReview:
     moves: list[MoveReview]
@@ -203,6 +211,7 @@ class GameReview:
             },
             "moves": [m.to_dict() for m in self.moves],
             "lessons": [m.ply for m in self.lessons()],
+            "version": REVIEW_VERSION,
         }
 
 

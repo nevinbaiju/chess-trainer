@@ -528,6 +528,26 @@ class Database:
         self.conn.commit()
         return cursor.rowcount
 
+    def stale_reviews(self, version: int) -> list[int]:
+        """Finished reviews serialised by an older version of the format.
+
+        They are not broken, only missing whatever was added since — which the
+        player discovers as a feature that silently does nothing on their
+        older games.
+        """
+        rows = self.conn.execute(
+            "SELECT game_id, data FROM reviews WHERE status='done' AND data IS NOT NULL"
+        ).fetchall()
+        stale = []
+        for row in rows:
+            try:
+                stored = json.loads(row["data"]).get("version", 1)
+            except (TypeError, ValueError):
+                stored = 1
+            if stored < version:
+                stale.append(row["game_id"])
+        return stale
+
     def get_review(self, game_id: int) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM reviews WHERE game_id=?", (game_id,)

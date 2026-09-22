@@ -47,7 +47,7 @@ from .reps import (
     check_rep,
     families_for,
 )
-from .review import review_game
+from .review import REVIEW_VERSION, review_game
 from .see import PIECE_VALUES, see
 from .stats import aggregate
 
@@ -191,6 +191,7 @@ async def lifespan(_: FastAPI):
     state["import"] = {"running": False, "step": "idle", "found": 0, "imported": 0,
                        "skipped": 0, "reviewed": 0, "to_review": 0, "error": None}
     state["watch"] = {"checked_at": None, "found_at": None, "new_games": 0, "error": None}
+    state["backfill"] = {"running": False, "done": 0, "total": 0, "error": None}
     state["watcher"] = asyncio.create_task(_watch_chesscom())
     state["rng"] = random.Random()
     state["curricula"] = {}
@@ -1603,6 +1604,63 @@ async def puzzle_give_up(puzzle_id: str):
 # --------------------------------------------------------------------------
 # Review
 # --------------------------------------------------------------------------
+
+
+@app.get("/api/reviews/stale")
+async def stale_reviews():
+    """Games whose review predates the current format version."""
+    stale = db().stale_reviews(REVIEW_VERSION)
+    return {
+        "version": REVIEW_VERSION,
+        "stale": len(stale),
+        "game_ids": stale,
+        "progress": dict(state["backfill"]),
+    }
+
+
+@app.post("/api/reviews/backfill")
+async def backfill_reviews(background: BackgroundTasks):
+    """Re-analyse every review stored under an older format version.
+
+    Serially, and standing aside while a game is being played: reviews and your
+    moves share one Stockfish behind one lock, so a backfill left to run flat
+    out would put a minute in front of every move you make.
+    """
+    if state["backfill"]["running"]:
+        raise HTTPException(409, "A backfill is already running")
+    stale = db().stale_reviews(REVIEW_VERSION)
+    if not stale:
+        return {"running": False, "done": 0, "total": 0, "error": None}
+
+    state["backfill"] = {"running": True, "done": 0, "total": len(stale), "error": None}
+    background.add_task(_run_backfill, stale)
+    return dict(state["backfill"])
+
+
+@app.post("/api/reviews/backfill/stop")
+async def stop_backfill():
+    state["backfill"]["running"] = False
+    return dict(state["backfill"])
+
+
+async def _run_backfill(game_ids: list[int]) -> None:
+    progress = state["backfill"]
+    try:
+        for game_id in game_ids:
+            if not progress["running"]:
+                break                      # asked to stop
+            while _game_in_progress():
+                await asyncio.sleep(30)    # your move comes first
+                if not progress["running"]:
+                    return
+            db().upsert_review(game_id, "pending")
+            await _run_review(game_id)
+            progress["done"] += 1
+    except Exception as exc:  # noqa: BLE001 - surfaced to the UI
+        log.warning("review backfill failed", exc_info=True)
+        progress["error"] = str(exc)
+    finally:
+        progress["running"] = False
 
 
 @app.post("/api/games/{game_id}/review")

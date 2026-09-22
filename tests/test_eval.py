@@ -292,3 +292,37 @@ def test_the_win_curve_really_does_flatten_mate():
     from app.eval import Eval, eval_win_percent
 
     assert 85 < eval_win_percent(Eval(mate=1)) < 92
+
+
+def test_a_review_carries_its_format_version():
+    """Without it there is no way to tell a review that is missing a field from
+    one that never had it, and the player finds out by noticing a feature does
+    nothing on their older games."""
+    from app.review import REVIEW_VERSION, GameReview
+    from app.phases import Division
+
+    review = GameReview(moves=[], division=Division(plies=40, middle=10, end=40),
+                        accuracy_white=0.0, accuracy_black=0.0,
+                        acpl_white=0, acpl_black=0)
+    assert review.to_dict()["version"] == REVIEW_VERSION
+
+
+def test_reviews_without_a_version_are_treated_as_the_oldest(tmp_path):
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    game = db.create_game(player_color="white", result="1-0")
+    db.upsert_review(game, "done", 1.0, {"moves": []})       # no version key
+    assert db.stale_reviews(2) == [game]
+
+    db.upsert_review(game, "done", 1.0, {"moves": [], "version": 2})
+    assert db.stale_reviews(2) == []
+
+
+def test_a_running_review_is_not_counted_as_stale(tmp_path):
+    from app.db import Database
+
+    db = Database(tmp_path / "t.db")
+    game = db.create_game(player_color="white", result="1-0")
+    db.upsert_review(game, "running", 0.4)
+    assert db.stale_reviews(2) == []
