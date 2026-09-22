@@ -124,6 +124,25 @@ CREATE TABLE IF NOT EXISTS puzzle_attempts (
 );
 CREATE INDEX IF NOT EXISTS puzzle_attempts_motif ON puzzle_attempts(motif);
 
+-- Replaying your own blunders. The positions themselves are derived from the
+-- reviews rather than stored, so only what you did about them lives here.
+CREATE TABLE IF NOT EXISTS correction_attempts (
+    game_id   INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply       INTEGER NOT NULL,
+    served_at TEXT NOT NULL,
+    solved    INTEGER,                 -- NULL = served but not finished
+    wrong     INTEGER NOT NULL DEFAULT 0,
+    hints     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (game_id, ply, served_at)
+);
+
+CREATE TABLE IF NOT EXISTS correction_bookmarks (
+    game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+    ply        INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (game_id, ply)
+);
+
 CREATE TABLE IF NOT EXISTS explanations (
     game_id  INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     ply      INTEGER NOT NULL,
@@ -547,6 +566,74 @@ class Database:
             if stored < version:
                 stale.append(row["game_id"])
         return stale
+
+    # -- corrections -------------------------------------------------------
+
+    def reviewed_games(self, source: str | None = None):
+        """Finished reviews with their game rows, for mining blunders out of."""
+        return self.conn.execute(
+            """SELECT g.*, r.data AS review_data
+               FROM games g JOIN reviews r ON r.game_id = g.id
+               WHERE r.status='done' AND r.data IS NOT NULL
+                 AND (? IS NULL OR g.source = ?)
+               ORDER BY g.created_at DESC""",
+            (source, source),
+        ).fetchall()
+
+    def correction_seen(self) -> set[tuple[int, int]]:
+        return {(r["game_id"], r["ply"]) for r in self.conn.execute(
+            "SELECT DISTINCT game_id, ply FROM correction_attempts")}
+
+    def open_correction(self):
+        return self.conn.execute(
+            "SELECT * FROM correction_attempts WHERE solved IS NULL "
+            "ORDER BY served_at DESC LIMIT 1").fetchone()
+
+    def serve_correction(self, game_id: int, ply: int) -> str:
+        served_at = now()
+        self.conn.execute(
+            "INSERT INTO correction_attempts (game_id, ply, served_at) VALUES (?, ?, ?)",
+            (game_id, ply, served_at))
+        self.conn.commit()
+        return served_at
+
+    def update_correction(self, game_id: int, ply: int, served_at: str, **fields):
+        if not fields:
+            return
+        sets = ", ".join(f"{k}=?" for k in fields)
+        self.conn.execute(
+            f"UPDATE correction_attempts SET {sets} "
+            "WHERE game_id=? AND ply=? AND served_at=?",
+            (*fields.values(), game_id, ply, served_at))
+        self.conn.commit()
+
+    def abandon_open_corrections(self) -> None:
+        self.conn.execute(
+            "UPDATE correction_attempts SET solved=0 WHERE solved IS NULL")
+        self.conn.commit()
+
+    def correction_scores(self) -> dict:
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS tried,
+                      SUM(CASE WHEN solved=1 THEN 1 ELSE 0 END) AS solved
+               FROM correction_attempts WHERE solved IS NOT NULL"""
+        ).fetchone()
+        return {"tried": int(row["tried"] or 0), "solved": int(row["solved"] or 0)}
+
+    def set_correction_bookmark(self, game_id: int, ply: int, on: bool) -> None:
+        if on:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO correction_bookmarks (game_id, ply, created_at) "
+                "VALUES (?, ?, ?)", (game_id, ply, now()))
+        else:
+            self.conn.execute(
+                "DELETE FROM correction_bookmarks WHERE game_id=? AND ply=?",
+                (game_id, ply))
+        self.conn.commit()
+
+    def correction_bookmarks(self) -> set[tuple[int, int]]:
+        return {(r["game_id"], r["ply"]) for r in self.conn.execute(
+            "SELECT game_id, ply FROM correction_bookmarks ORDER BY created_at DESC")}
 
     def get_review(self, game_id: int) -> dict | None:
         row = self.conn.execute(

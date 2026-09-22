@@ -69,6 +69,7 @@ function showView(name) {
   // get stranded in.
   if (name === "review" && !state.reviewGameId) showReviewList()
   if (name === "puzzles") loadPuzzles().catch((e) => console.error(e))
+  if (name === "fix") loadFix().catch((e) => console.error(e))
   if (name === "reps" && !$("rep-family").options.length) loadFamilies().catch(console.error)
 }
 
@@ -2068,4 +2069,218 @@ $("pz-bookmark-list").addEventListener("click", async (e) => {
   if (!row) return
   state.puzzle = null
   applyPuzzle(await api(`/api/puzzles/${row.dataset.id}/retry`, {method: "POST"}))
+})
+
+/* ------------------------------------------------------------- fix -- */
+/* Replaying your own blunders. The puzzle tab drills patterns you are bad at;
+   this drills the exact positions you lost from. Judged by what a move gives
+   away rather than by matching the engine's string — several moves are usually
+   fine, and failing someone for a good one teaches only that the app is
+   arbitrary. */
+
+let fixBoard = null
+const ensureFixBoard = () => (fixBoard ||= makeBoard($("fixboard")))
+
+async function loadFix() {
+  let d
+  try {
+    d = await api("/api/corrections")
+  } catch (err) {
+    return
+  }
+  state.fixStatus = d
+  $("fx-empty").hidden = d.ready
+  $("fx-card").hidden = !d.ready
+  $("fx-progress-card").hidden = !d.ready
+  if (!d.ready) return
+  $("fx-queue").textContent =
+    `${d.total} blunder${d.total === 1 ? "" : "s"} found in your reviewed games · ` +
+    `${d.unseen} not replayed yet · ${d.scores.solved}/${d.scores.tried} held so far`
+  loadFixBookmarks().catch(() => {})
+  if (!state.fix) await nextFix()
+}
+
+async function nextFix() {
+  $("fx-next").disabled = true
+  try {
+    applyFix(await api("/api/corrections/next", {method: "POST"}))
+  } catch (err) {
+    $("fx-status").textContent = err.message
+  } finally {
+    $("fx-next").disabled = false
+  }
+}
+
+function applyFix(c) {
+  const fresh = state.fix?.key !== c.key
+  state.fix = c
+  const board = ensureFixBoard()
+  board.setPosition(c.fen, true)
+  board.setOrientation(c.you_play === "black" ? COLOR.black : COLOR.white)
+  board.removeMarkers()
+  board.removeLegalMovesMarkers()
+  if (fresh) {
+    state.fixHint = 0
+    $("fx-result").hidden = true
+  }
+
+  const when = (c.played_at || "").slice(0, 10)
+  $("fx-intro").textContent =
+    `Move ${c.move_number} of your ${c.opening || "game"}${when ? ` on ${when}` : ""}. ` +
+    `You went wrong here — find something that holds.`
+  $("fx-side").textContent = c.you_play
+  $("fx-cost").textContent = `${c.cost}% of your winning chances`
+  $("fx-hint").textContent = state.fixHint === 0 ? "Hint" : "Where to?"
+  $("fx-hint").hidden = c.status !== "playing" || state.fixHint >= 2
+  setFixBookmark(c.bookmarked)
+
+  if (c.status === "playing") {
+    $("fx-title").textContent = "Play it again"
+    $("fx-status").textContent = c.wrong
+      ? "That one does not hold either. Try again."
+      : "Your move."
+    setMoveInput(board, fixMoveInput, c.you_play === "black" ? COLOR.black : COLOR.white)
+  } else {
+    board.disableMoveInput()
+    showFixResult(c)
+  }
+}
+
+function setFixBookmark(on) {
+  const b = $("fx-bookmark")
+  b.textContent = on ? "★ Kept" : "☆ Keep"
+  b.setAttribute("aria-pressed", on ? "true" : "false")
+}
+
+function showFixResult(c) {
+  const held = c.status.startsWith("held")
+  const clean = c.status === "held"
+  sound.play(held ? "win" : "lose", 0.2)
+  $("fx-title").textContent = held ? "That holds" : "Shown"
+  $("fx-status").textContent = ""
+  const a = c.attempt || {}
+
+  const yours = a.san
+    ? `<p class="rep-explain">You played <b>${escapeHtml(a.san)}</b>${
+        a.lost != null ? ` — it gives away ${a.lost}%` : ""}.</p>`
+    : ""
+  $("fx-result").innerHTML = `
+    <div class="rep-verdict ${held ? "is-pass" : "is-miss"}">
+      ${clean ? "Held, first try" : held ? "Held, with help" : "Not found"}
+    </div>
+    ${yours}
+    <p class="rep-explain">In the real game you played
+       <b>${escapeHtml(c.played_san || "?")}</b>, which cost ${c.cost}%.</p>
+    ${a.engine_best ? `<p class="hint">Stockfish plays
+       <b>${escapeHtml(a.engine_best)}</b>${a.engine_line?.length
+         ? ` — ${escapeHtml(a.engine_line.join(" "))}` : ""}.</p>` : ""}`
+  $("fx-result").hidden = false
+  loadFix().catch(() => {})
+}
+
+function fixMoveInput(event) {
+  const board = ensureFixBoard()
+  if (event.type === INPUT_EVENT_TYPE.moveInputStarted) {
+    const targets = fixTargets(event.squareFrom)
+    if (!targets.length) return false
+    board.addLegalMovesMarkers(targets)
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.moveInputCanceled ||
+      event.type === INPUT_EVENT_TYPE.moveInputFinished) {
+    board.removeLegalMovesMarkers()
+    return true
+  }
+  if (event.type === INPUT_EVENT_TYPE.validateMoveInput) {
+    const plain = event.squareFrom + event.squareTo
+    const legal = state.fix.legal_moves
+    if (legal.includes(plain)) { submitFixMove(plain); return true }
+    const promos = legal.filter((m) => m.startsWith(plain) && m.length === 5)
+    if (promos.length) { submitFixMove(plain + "q"); return true }
+    return false
+  }
+  return true
+}
+
+function fixTargets(from) {
+  if (!state.fix || state.fix.status !== "playing") return []
+  const seen = new Set()
+  const out = []
+  for (const uci of state.fix.legal_moves) {
+    if (!uci.startsWith(from)) continue
+    const to = uci.slice(2, 4)
+    if (seen.has(to)) continue
+    seen.add(to)
+    out.push({from, to, promotion: uci.length === 5 ? uci[4] : undefined})
+  }
+  return out
+}
+
+async function submitFixMove(uci) {
+  const c = state.fix
+  ensureFixBoard().disableMoveInput()
+  $("fx-status").textContent = "Checking that move…"
+  try {
+    applyFix(await api(`/api/corrections/${c.game_id}/${c.ply}/move`, {
+      method: "POST", body: JSON.stringify({uci}),
+    }))
+  } catch (err) {
+    $("fx-status").textContent = err.message
+    applyFix(state.fix)
+  }
+}
+
+$("fx-next").addEventListener("click", () => { state.fix = null; nextFix() })
+$("fx-giveup").addEventListener("click", async () => {
+  if (!state.fix) return
+  applyFix(await api(`/api/corrections/${state.fix.game_id}/${state.fix.ply}/give_up`,
+                     {method: "POST"}))
+})
+$("fx-hint").addEventListener("click", async () => {
+  if (!state.fix || state.fix.status !== "playing") return
+  const level = (state.fixHint || 0) + 1
+  try {
+    const h = await api(
+      `/api/corrections/${state.fix.game_id}/${state.fix.ply}/hint?level=${level}`,
+      {method: "POST"})
+    const board = ensureFixBoard()
+    board.removeMarkers()
+    board.addMarker(MARKER_TYPE.framePrimary, h.squares[0])
+    if (h.squares[1]) board.addMarker(MARKER_TYPE.circlePrimary, h.squares[1])
+    state.fixHint = h.level
+    $("fx-hint").textContent = "Where to?"
+    $("fx-hint").hidden = h.level >= 2
+    $("fx-status").textContent = h.level === 1
+      ? "That is the piece the engine moves." : "That is the engine's move."
+  } catch (err) {
+    $("fx-status").textContent = err.message
+  }
+})
+$("fx-bookmark").addEventListener("click", async () => {
+  if (!state.fix) return
+  const on = !state.fix.bookmarked
+  await api(`/api/corrections/${state.fix.game_id}/${state.fix.ply}/bookmark`, {
+    method: "POST", body: JSON.stringify({on}),
+  })
+  state.fix.bookmarked = on
+  setFixBookmark(on)
+  loadFixBookmarks().catch(() => {})
+})
+
+async function loadFixBookmarks() {
+  const rows = await api("/api/corrections/bookmarks")
+  $("fx-bookmarks").hidden = rows.length === 0
+  $("fx-bookmark-list").innerHTML = rows.map((b) =>
+    `<li data-game="${b.game_id}" data-ply="${b.ply}" tabindex="0" role="button">
+       <span class="rep-nm">move ${b.move_number} · ${escapeHtml(b.opening || "game")}</span>
+       <span class="rep-streak">${b.cost}%</span>
+     </li>`).join("")
+}
+
+$("fx-bookmark-list").addEventListener("click", async (e) => {
+  const row = e.target.closest("li[data-game]")
+  if (!row) return
+  state.fix = null
+  applyFix(await api(
+    `/api/corrections/${row.dataset.game}/${row.dataset.ply}/retry`, {method: "POST"}))
 })

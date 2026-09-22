@@ -44,6 +44,7 @@
     <button class="tab is-active" data-view="play">Play</button>
     <button class="tab" data-view="reps">Reps</button>
     <button class="tab" data-view="puzzles">Puzzles</button>
+    <button class="tab" data-view="fix">Fix</button>
     <button class="tab" data-view="review">Review</button>
   </nav>
 </header>
@@ -249,6 +250,54 @@
           <p class="hint">Puzzles are drawn from whatever is costing you most
              games right now, in proportion — so the mix shifts as you improve.</p>
           <ol id="pz-score-list" class="rep-lines"></ol>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ----------------------------------------------------------- FIX --- -->
+  <section id="view-fix" class="view">
+    <div class="layout">
+      <div>
+        <div id="fixboard" class="board"></div>
+        <p class="status" id="fx-status"></p>
+      </div>
+      <aside>
+        <div id="fx-empty" class="card" hidden>
+          <h2>Nothing to fix yet</h2>
+          <p class="hint">This replays blunders from your reviewed chess.com
+             games. Import some games and let them analyse first.</p>
+        </div>
+
+        <div id="fx-card" class="card" hidden>
+          <h2 id="fx-title">Play it again</h2>
+          <p class="hint" id="fx-intro"></p>
+          <div class="facts">
+            <dt>You play</dt><dd id="fx-side">–</dd>
+            <dt>It cost</dt><dd id="fx-cost">–</dd>
+          </div>
+
+          <div class="board-actions">
+            <button id="fx-hint" class="btn btn-quiet">Hint</button>
+            <button id="fx-bookmark" class="btn btn-quiet" aria-pressed="false">☆ Keep</button>
+          </div>
+
+          <div id="fx-result" hidden></div>
+
+          <div class="board-actions">
+            <button id="fx-next" class="btn btn-primary">Next blunder</button>
+            <button id="fx-giveup" class="btn btn-quiet">Show solution</button>
+          </div>
+        </div>
+
+        <div id="fx-progress-card" class="card" hidden>
+          <h2>Your queue</h2>
+          <p class="hint" id="fx-queue"></p>
+        </div>
+
+        <div id="fx-bookmarks" class="card" hidden>
+          <h2>Kept positions</h2>
+          <ol id="fx-bookmark-list" class="rep-lines"></ol>
         </div>
       </aside>
     </div>

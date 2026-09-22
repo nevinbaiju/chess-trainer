@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from .chesscom import ChessCom, convert as convert_game, wanted
 from .coach import Coach
+from .corrections import Blunder, blunders_in, position_before, rank, verdict
 from .db import Database, now
 from .engines import Stockfish
 from .eval import eval_win_percent
@@ -109,6 +110,11 @@ DEFAULT_SETTINGS: dict = {
 #: Shallow enough to stay on the move path, deep enough to see the refutation
 #: that most of these motifs live in.
 GUARD_DEPTH = 10
+
+#: Depth for judging a correction. Shallower than a review because it runs
+#: while the player waits, and deep enough that "does this throw it away" is
+#: not in doubt at this level.
+CORRECTION_DEPTH = 14
 
 
 def effective_settings() -> dict:
@@ -1599,6 +1605,222 @@ async def puzzle_give_up(puzzle_id: str):
     payload["status"] = "gave_up"
     db().finish_puzzle(puzzle_id, row["served_at"], False, row["wrong"] + 1)
     return payload
+
+
+# --------------------------------------------------------------------------
+# Corrections — replaying your own blunders
+# --------------------------------------------------------------------------
+
+
+def all_blunders() -> list[Blunder]:
+    """Every blunder in every reviewed chess.com game, worst first.
+
+    Derived on demand rather than stored: a re-analysed game changes its
+    blunders, and a cached list would quietly disagree with the review it came
+    from.
+    """
+    found: list[Blunder] = []
+    for row in db().reviewed_games(source="chesscom"):
+        try:
+            found += blunders_in(row, json.loads(row["review_data"]))
+        except (TypeError, ValueError):
+            continue
+    return rank(found)
+
+
+def find_blunder(game_id: int, ply: int) -> Blunder | None:
+    return next((b for b in all_blunders()
+                 if b.game_id == game_id and b.ply == ply), None)
+
+
+def correction_payload(blunder: Blunder, attempt, *, reveal: bool = False,
+                       extra: dict | None = None) -> dict:
+    board = chess.Board(blunder.fen)
+    marks = db().correction_bookmarks()
+    payload = {
+        "game_id": blunder.game_id,
+        "ply": blunder.ply,
+        "key": blunder.key,
+        "fen": blunder.fen,
+        "you_play": "white" if blunder.color == chess.WHITE else "black",
+        "legal_moves": [m.uci() for m in board.legal_moves],
+        "move_number": blunder.ply // 2 + 1,
+        "cost": round(blunder.win_lost, 1),
+        "opening": blunder.opening,
+        "played_at": blunder.played_at,
+        "motifs": list(blunder.motifs),
+        "bookmarked": (blunder.game_id, blunder.ply) in marks,
+        "wrong": attempt["wrong"] if attempt else 0,
+        "hints": attempt["hints"] if attempt else 0,
+        "status": "playing",
+    }
+    if reveal:
+        # What you actually played is withheld until the end: it is the one
+        # move you are guaranteed to remember, and seeing it first turns the
+        # exercise into "avoid that" rather than "find something".
+        payload.update({
+            "played_san": blunder.played_san,
+            "played_uci": blunder.played_uci,
+            "best_san": blunder.best_san,
+            "best_uci": blunder.best_uci,
+        })
+    payload.update(extra or {})
+    return payload
+
+
+@app.get("/api/corrections")
+async def corrections_status():
+    found = all_blunders()
+    seen = db().correction_seen()
+    return {
+        "total": len(found),
+        "unseen": sum(1 for b in found if (b.game_id, b.ply) not in seen),
+        "bookmarks": len(db().correction_bookmarks()),
+        "scores": db().correction_scores(),
+        "ready": bool(found),
+    }
+
+
+@app.post("/api/corrections/next")
+async def next_correction():
+    """The worst blunder you have not replayed yet."""
+    open_row = db().open_correction()
+    if open_row is not None:
+        blunder = find_blunder(open_row["game_id"], open_row["ply"])
+        if blunder is not None:
+            return correction_payload(blunder, open_row)
+        db().abandon_open_corrections()      # the review changed under it
+
+    found = all_blunders()
+    if not found:
+        raise HTTPException(409, "No reviewed chess.com games with blunders yet")
+    seen = db().correction_seen()
+    nxt = next((b for b in found if (b.game_id, b.ply) not in seen), None)
+    if nxt is None:
+        raise HTTPException(409, "You have replayed every blunder on record")
+
+    db().serve_correction(nxt.game_id, nxt.ply)
+    return correction_payload(nxt, db().open_correction())
+
+
+@app.post("/api/corrections/{game_id}/{ply}/move")
+async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
+    """Judge a replacement move by what it gives away, not by matching a string."""
+    attempt = db().open_correction()
+    if attempt is None or (attempt["game_id"], attempt["ply"]) != (game_id, ply):
+        raise HTTPException(404, "That position is not the one in progress")
+    blunder = find_blunder(game_id, ply)
+    if blunder is None:
+        raise HTTPException(410, "That blunder is no longer in the review")
+
+    board = chess.Board(blunder.fen)
+    try:
+        move = chess.Move.from_uci(move_in.uci)
+    except ValueError:
+        raise HTTPException(400, f"{move_in.uci!r} is not a move")
+    if move not in board.legal_moves:
+        raise HTTPException(400, f"{move_in.uci} is not legal here")
+
+    white = blunder.color == chess.WHITE
+    best_lines = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
+    after = board.copy()
+    after.push(move)
+    played_lines = await state["stockfish"].analyse(after, depth=CORRECTION_DEPTH, multipv=1)
+    if not best_lines or not played_lines:
+        raise HTTPException(503, "The engine is not available")
+
+    result = verdict(
+        eval_win_percent(best_lines[0].score.pov(white)),
+        eval_win_percent(played_lines[0].score.pov(white)),
+    )
+    result["san"] = board.san(move)
+    result["uci"] = move.uci()
+    result["reply"] = played_lines[0].pv_san(after, limit=4)
+    engine_best = best_lines[0].best_move
+    result["engine_best"] = board.san(engine_best) if engine_best else None
+    result["engine_line"] = best_lines[0].pv_san(board, limit=5)
+
+    wrong = attempt["wrong"] + (0 if result["held"] else 1)
+    if result["held"]:
+        db().update_correction(game_id, ply, attempt["served_at"],
+                               wrong=wrong, solved=1)
+        status = "held" if attempt["wrong"] == 0 and attempt["hints"] == 0 \
+            else "held_with_help"
+    else:
+        db().update_correction(game_id, ply, attempt["served_at"], wrong=wrong)
+        status = "playing"
+
+    return correction_payload(blunder, db().conn.execute(
+        "SELECT * FROM correction_attempts WHERE game_id=? AND ply=? AND served_at=?",
+        (game_id, ply, attempt["served_at"])).fetchone(),
+        reveal=result["held"], extra={"status": status, "attempt": result})
+
+
+@app.post("/api/corrections/{game_id}/{ply}/hint")
+async def correction_hint(game_id: int, ply: int, level: int = 1):
+    attempt = db().open_correction()
+    if attempt is None or (attempt["game_id"], attempt["ply"]) != (game_id, ply):
+        raise HTTPException(404, "That position is not the one in progress")
+    blunder = find_blunder(game_id, ply)
+    if blunder is None or not blunder.best_uci:
+        raise HTTPException(409, "No engine move was stored for this one")
+
+    level = min(max(level, 1), 2)
+    db().update_correction(game_id, ply, attempt["served_at"],
+                           hints=max(attempt["hints"], level))
+    squares = [blunder.best_uci[:2]]
+    if level >= 2:
+        squares.append(blunder.best_uci[2:4])
+    return {"level": level, "squares": squares}
+
+
+@app.post("/api/corrections/{game_id}/{ply}/give_up")
+async def correction_give_up(game_id: int, ply: int):
+    attempt = db().open_correction()
+    if attempt is None or (attempt["game_id"], attempt["ply"]) != (game_id, ply):
+        raise HTTPException(404, "That position is not the one in progress")
+    blunder = find_blunder(game_id, ply)
+    if blunder is None:
+        raise HTTPException(410, "That blunder is no longer in the review")
+
+    board = chess.Board(blunder.fen)
+    lines = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
+    db().update_correction(game_id, ply, attempt["served_at"], solved=0,
+                           wrong=attempt["wrong"] + 1)
+    shown = {"engine_line": lines[0].pv_san(board, limit=5) if lines else [],
+             "engine_best": board.san(lines[0].best_move)
+             if lines and lines[0].best_move else None}
+    return correction_payload(blunder, db().open_correction() or attempt,
+                              reveal=True,
+                              extra={"status": "shown", "attempt": shown})
+
+
+@app.post("/api/corrections/{game_id}/{ply}/bookmark")
+async def correction_bookmark(game_id: int, ply: int, spec: Bookmark):
+    db().set_correction_bookmark(game_id, ply, spec.on)
+    return {"game_id": game_id, "ply": ply, "bookmarked": spec.on,
+            "total": len(db().correction_bookmarks())}
+
+
+@app.get("/api/corrections/bookmarks")
+async def correction_bookmark_list():
+    marks = db().correction_bookmarks()
+    return [
+        {"game_id": b.game_id, "ply": b.ply, "key": b.key,
+         "cost": round(b.win_lost, 1), "opening": b.opening,
+         "move_number": b.ply // 2 + 1}
+        for b in all_blunders() if (b.game_id, b.ply) in marks
+    ]
+
+
+@app.post("/api/corrections/{game_id}/{ply}/retry")
+async def correction_retry(game_id: int, ply: int):
+    blunder = find_blunder(game_id, ply)
+    if blunder is None:
+        raise HTTPException(404, "No such blunder")
+    db().abandon_open_corrections()
+    db().serve_correction(game_id, ply)
+    return correction_payload(blunder, db().open_correction())
 
 
 # --------------------------------------------------------------------------

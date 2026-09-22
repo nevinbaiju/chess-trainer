@@ -575,3 +575,6 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
                letter-spacing: .05em; color: var(--ink-soft); }
 .pz-after-eval { font-size: .95rem; margin: .1rem 0 .3rem; }
 .pz-after .rep-line { margin: .2rem 0; }
+#fx-bookmark-list li { grid-template-columns: 1fr auto; cursor: pointer; }
+#fx-bookmark-list li:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+#fx-bookmark-list .rep-nm { overflow-wrap: normal; }
