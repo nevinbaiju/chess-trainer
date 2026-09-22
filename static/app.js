@@ -819,7 +819,16 @@ function renderLessons(game) {
     const common = m.human.systematic
       ? `<span class="badge common">common at your level</span>`
       : ""
-    let meta = `${m.judgment} · cost ${Math.round(m.win_lost)}% winning chances · ${m.phase}`
+    // A thrown-away mate is not well described as "cost 12% winning chances".
+    const hadMate = heroMate({...m, mate_white: m.mate_before_white})
+    const hasMate = heroMate(m)
+    let cost = `cost ${Math.round(m.win_lost)}% winning chances`
+    if (hadMate != null && hadMate > 0 && (hasMate == null || hasMate < 0)) {
+      cost = `threw away mate in ${hadMate}`
+    } else if (hasMate != null && hasMate < 0) {
+      cost = `now mated in ${Math.abs(hasMate)}`
+    }
+    let meta = `${m.judgment} · ${cost} · ${m.phase}`
     if (m.human.played_pct) {
       meta += ` · ${m.human.played_pct}% of players at your rating play it`
     }
@@ -991,8 +1000,28 @@ const SEVERITY = {
 /** Win% from the hero's point of view. Stored value is White-relative. */
 function heroWin(entry) {
   const white = state.gameForReview.player_color === "white"
+  // A forced mate is not 88% winning, which is what the win% curve returns once
+  // mate is flattened to its centipawn ceiling. Pin it to the top or the bottom
+  // so the graph shows a decided game as decided.
+  const mate = heroMate(entry)
+  if (mate != null) return mate > 0 ? 100 : 0
   const v = entry.win_white != null ? entry.win_white : 50
   return white ? v : 100 - v
+}
+
+/** Signed mate distance from the hero's side: +3 they mate, -3 they get mated. */
+function heroMate(entry) {
+  if (entry.mate_white == null) return null
+  const white = state.gameForReview.player_color === "white"
+  return white ? entry.mate_white : -entry.mate_white
+}
+
+/** What the engine actually said, in the engine's own terms where it matters. */
+function heroEvalText(entry) {
+  const mate = heroMate(entry)
+  if (mate == null) return `${Math.round(heroWin(entry))}% winning`
+  const n = Math.abs(mate)
+  return mate > 0 ? `M${n} for you` : `M${n} against you`
 }
 
 const gx = (i, n) => GRAPH.padX + (i / Math.max(1, n - 1)) * (GRAPH.w - 2 * GRAPH.padX)
@@ -1076,7 +1105,7 @@ function showTip(ply, evt) {
   const judged = m.judgment ? ` · ${SEVERITY[m.judgment].label}` : ""
   tip.innerHTML =
     `<strong>${num}${dots} ${escapeHtml(m.san)}</strong>${escapeHtml(judged)}` +
-    `<span>${Math.round(heroWin(m))}% winning</span>`
+    `<span>${escapeHtml(heroEvalText(m))}</span>`
   tip.hidden = false
   const wrapBox = $("graph-wrap").getBoundingClientRect()
   const x = evt.clientX - wrapBox.left
@@ -1745,6 +1774,7 @@ function applyPuzzle(p, keepDisclosures) {
     showDisclosure("pz-show-type", "pz-type", false)
     $("pz-replay").hidden = true
     $("pz-result").hidden = true
+    $("pz-after").hidden = true
   }
   $("pz-hint").textContent = state.hintLevel === 0 ? "Hint" : "Where to?"
   $("pz-hint").hidden = p.status !== "playing" || state.hintLevel >= 2
@@ -1789,6 +1819,8 @@ function showPuzzleResult(p) {
   showDisclosure("pz-show-type", "pz-type", true)
   $("pz-type").textContent = motifLabel(p.motif)
   loadPuzzles().catch(() => {})
+
+  showContinuation(p).catch((e) => console.error(e))
 
   if (!p.line?.length) return
   if (p.status === "gave_up") {
@@ -1857,6 +1889,38 @@ function renderPly() {
   }
   $("pz-prev").disabled = i < 0
   $("pz-next-ply").disabled = i >= p.line.length - 1
+}
+
+/* A puzzle stops the moment the tactic is won, which is exactly where the
+   interesting question starts at this level: you have won a rook, now what?
+   Fetched after the result is on screen, so waiting for the engine never
+   delays the verdict. */
+async function showContinuation(p) {
+  const el = $("pz-after")
+  el.hidden = false
+  el.innerHTML = `<p class="hint">Looking at what happens next…</p>`
+  let c
+  try {
+    c = await api(`/api/puzzles/${p.id}/continuation`, {method: "POST"})
+  } catch (err) {
+    el.hidden = true
+    return
+  }
+  if (state.puzzle?.id !== p.id) return      // they moved on while we waited
+
+  if (c.over) {
+    el.innerHTML = `<p class="hint">${escapeHtml(c.note)}</p>`
+    return
+  }
+  const verdict = c.mate != null
+    ? `<b>M${Math.abs(c.mate)}</b> ${c.mate > 0 ? "for you" : "against you"}`
+    : `<b>${c.cp > 0 ? "+" : ""}${(c.cp / 100).toFixed(1)}</b> ${
+        c.cp > 0 ? "for you" : "against you"}`
+  el.innerHTML = `
+    <h3>What happens next</h3>
+    <p class="pz-after-eval">${verdict} · ${c.yours ? "your move" : "their move"}</p>
+    <p class="rep-line">${escapeHtml(c.line.join(" "))}</p>
+    <p class="hint">Stockfish to depth ${c.depth}, from where the puzzle stopped.</p>`
 }
 
 function puzzleMoveInput(event) {

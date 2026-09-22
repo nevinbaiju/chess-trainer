@@ -244,3 +244,51 @@ def test_acpl_ignores_gains_and_caps_losses():
     evals = [ev.Eval(cp=15), ev.Eval(cp=-200), ev.Eval(cp=-180)]
     assert ev.acpl(None, evals, white=True) is not None
     assert ev.acpl(None, [], white=True) is None
+
+
+# --------------------------------------------------------------------------
+# Mate has to survive the trip to the browser
+# --------------------------------------------------------------------------
+
+
+def _move(**over):
+    from app.eval import Eval
+    from app.review import MoveReview
+
+    fields = dict(
+        ply=7, san="h6", uci="h7h6", white_to_move=False, phase="opening",
+        eval_before=Eval(cp=20), eval_after=Eval(cp=30),
+        win_before=53.0, win_after=12.0, accuracy=40.0, judgment=None,
+        best_move_san=None, best_pv_san=[], refutation_san=[],
+    )
+    fields.update(over)
+    return MoveReview(**fields)
+
+
+def test_a_review_move_carries_the_mate_not_just_a_percentage():
+    """The bug: to_dict() serialised win% only, so a forced mate arrived in the
+    browser as "88% winning" — the number the win% curve returns once mate is
+    flattened to its centipawn ceiling. Both are wrong and neither is what the
+    engine said."""
+    from app.eval import Eval
+
+    out = _move(eval_after=Eval(mate=1)).to_dict()
+    assert out["mate_white"] == 1, "signed, White's point of view"
+    assert out["mate_before_white"] is None
+    assert out["win_white"] is not None, "the percentage is still there for the graph"
+
+
+def test_a_position_with_no_mate_reports_none():
+    from app.eval import Eval
+
+    out = _move(eval_after=Eval(cp=30)).to_dict()
+    assert out["mate_white"] is None
+    assert out["mate_before_white"] is None
+
+
+def test_the_win_curve_really_does_flatten_mate():
+    """Why the mate field is needed at all: at the beginner constant a forced
+    mate comes out around 88%, not 100%."""
+    from app.eval import Eval, eval_win_percent
+
+    assert 85 < eval_win_percent(Eval(mate=1)) < 92

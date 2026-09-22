@@ -135,6 +135,12 @@ class MoveReview:
             "win_before": round(self.win_before, 1),
             "win_after": round(self.win_after, 1),
             "win_white": round(self.win_white_after, 1),
+            # Signed, White's point of view: +3 means White mates in 3. Without
+            # this the front end can only ever show a win%, and a forced mate
+            # reads as "88% winning" — which is both wrong and less useful than
+            # the thing the engine actually said.
+            "mate_white": self.eval_after.mate,
+            "mate_before_white": self.eval_before.mate,
             "win_lost": round(self.win_lost, 1),
             "accuracy": round(self.accuracy, 1),
             "judgment": self.judgment.value if self.judgment else None,

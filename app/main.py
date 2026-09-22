@@ -1493,6 +1493,58 @@ async def puzzle_reveal_type(puzzle_id: str):
     return type_payload(row)
 
 
+@app.post("/api/puzzles/{puzzle_id}/continuation")
+async def puzzle_continuation(puzzle_id: str, depth: int = 18):
+    """What happens next, once the puzzle's own line runs out.
+
+    A puzzle stops at the point the tactic is won, which is exactly where the
+    interesting question starts for someone at this level: you have won a rook,
+    now what? So the engine is pointed at the final position and asked for the
+    continuation, in the solver's terms — including "this is mate in 3", which
+    is more use than "+7.4".
+    """
+    puzzle = db().get_puzzle(puzzle_id)
+    if puzzle is None:
+        raise HTTPException(404, "No such puzzle")
+
+    moves = puzzle["moves"].split()
+    line = solution_line(puzzle["fen"], moves)
+    board = chess.Board(line[-1]["fen"] if line else puzzle["fen"])
+    solver = opening_position(puzzle["fen"], moves)[0].turn
+
+    if board.is_game_over():
+        return {
+            "over": True,
+            "outcome": board.result(),
+            "mate": board.is_checkmate(),
+            "line": [],
+            "note": "Checkmate — the puzzle finished the job."
+            if board.is_checkmate() else "The game is already over here.",
+        }
+
+    lines = await state["stockfish"].analyse(board, depth=depth, multipv=1)
+    if not lines:
+        raise HTTPException(503, "The engine is not available")
+
+    best = lines[0]
+    # Our Eval exposes cp/mate as attributes, and pov() takes "is this white's
+    # point of view" rather than a colour.
+    score = best.score.pov(solver == chess.WHITE)
+    return {
+        "over": False,
+        "fen": board.fen(),
+        # Whose move it is here — usually the opponent's, since a puzzle tends
+        # to end on yours.
+        "to_move": "white" if board.turn == chess.WHITE else "black",
+        "yours": board.turn == solver,
+        "mate": score.mate,
+        "cp": score.cp,
+        "win_pct": round(eval_win_percent(score), 1),
+        "line": best.pv_san(board, limit=6),
+        "depth": best.depth,
+    }
+
+
 @app.post("/api/puzzles/{puzzle_id}/bookmark")
 async def puzzle_bookmark(puzzle_id: str, spec: Bookmark):
     if db().get_puzzle(puzzle_id) is None:
