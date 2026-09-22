@@ -31,7 +31,7 @@ Reps turn the same catalogue into a curriculum: every rep is a complete
 variation ending on *your* move, a wrong move is explained and taken back
 rather than ending the exercise, and a line only banks when you play it clean.
 
-![Opening reps](docs/img/reps.png)
+![Opening reps](docs/img/reps-curriculum.png)
 
 ## Review your real games
 
@@ -42,7 +42,7 @@ Stockfish decides what was bad; motif detectors decide what happened; a
 language model writes the prose and is allowed no chess of its own. New games
 are picked up automatically about a minute after you finish them.
 
-![Review](docs/img/review.png)
+![Review](docs/img/review-stats.png)
 
 ## Puzzles for your own weaknesses
 
@@ -52,7 +52,7 @@ puzzle database under CC0 with a matching theme on every puzzle. So the two
 worst motifs pick the puzzles, at a rating band just above yours, and the
 selection moves as the weakness list does.
 
-![Puzzles](docs/img/puzzles.png)
+![Puzzles](docs/img/puzzles-weakness.png)
 
 ## Fix my blunder
 
@@ -70,12 +70,12 @@ Rewind through the line at any point without losing it, and branch off
 somewhere else. Rewinding to the start puts the comparison back on the board —
 what you played then, what the engine wanted, what you found instead.
 
-![Replaying a blunder: what you played, what the engine wanted, and where each line goes](docs/img/fix.png)
+![Replaying a blunder: what you played, what the engine wanted, and where each line goes](docs/img/fix-full.png)
 
 Closer, the part that matters — the game collapsing while the line you are
 playing holds:
 
-![The two lines coming apart](docs/img/fix-graph.png)
+![The two lines coming apart](docs/img/fix-two-lines.png)
 
 [More on all four](docs/features.md)
 
