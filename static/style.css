@@ -582,3 +582,8 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
 .arrow-key.no-engine span:nth-child(2) { display: none; }
 .arrow-key.no-yours span:nth-child(3) { display: none; }
 #fx-key { margin-top: .4rem; }
+/* Shown only when the clipboard refuses us — the text still has to be gettable. */
+.copy-box { width: 100%; min-height: 6rem; font: inherit; font-size: .75rem;
+            font-family: ui-monospace, monospace; margin: .5rem 0;
+            border: 1px solid var(--border); border-radius: 6px; padding: .5rem;
+            background: var(--bg); color: var(--ink); }

@@ -145,3 +145,43 @@ def test_position_before_ply_zero_is_the_start():
 def test_position_before_replays_exactly_that_many_plies():
     board = position_before(LINE, 4)
     assert len(board.move_stack) == 4
+
+
+# --------------------------------------------------------------------------
+# Not making the player wait
+# --------------------------------------------------------------------------
+
+
+def _main() -> str:
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py").read_text()
+
+
+def test_the_position_is_swept_when_it_is_served_not_when_a_move_arrives():
+    """Analysing after the fact costs an engine call per attempt and leaves the
+    player watching a spinner. One sweep of the position they are already
+    looking at answers every attempt, retries included."""
+    source = _main()
+    body = source[source.index("async def next_correction"):source.index("async def correction_move")]
+    assert "_warm_ranking" in body
+    assert "create_task" in body, "the sweep must not block serving the position"
+
+
+def test_an_unranked_move_is_refused_without_a_second_opinion():
+    """Everything outside the sweep is worse than its weakest entry, so if that
+    already fails there is nothing left to ask."""
+    source = _main()
+    body = source[source.index("async def correction_move"):source.index("async def correction_hint")]
+    assert 'ranking["best_win"] - ranking["floor"] >= FORGIVEN' in body
+    assert "unranked" in body
+
+
+def test_background_jobs_stand_aside_for_any_engine_use_not_just_playing():
+    """Judging a correction and reading a puzzle continuation queue behind the
+    backfill exactly as a move does. This is how 'checking that move' came to
+    take two seconds."""
+    source = _main()
+    assert "_engine_in_demand()" in source
+    backfill = source[source.index("async def _run_backfill"):]
+    backfill = backfill[:backfill.index("\n@app")]
+    assert "_game_in_progress() or _engine_in_demand()" in backfill

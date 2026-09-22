@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import chess
+import chess.pgn
 
 #: Win% a correction may give away and still count. Matches the review's
 #: inaccuracy threshold: below this, nothing was thrown away.
@@ -117,3 +118,32 @@ def verdict(win_best: float, win_played: float) -> dict:
         "win_played": round(win_played, 1),
         "win_best": round(win_best, 1),
     }
+
+
+def pgn_to_here(game_row, ply: int) -> str:
+    """The game as played up to the blunder, ready to paste elsewhere.
+
+    Written out fresh rather than sliced out of the stored PGN: the stored one
+    carries chess.com's clock annotations and headers for a game that has not
+    happened yet from this position's point of view. Lichess, SCID and the rest
+    all take a bare movetext with a result of "*".
+    """
+    board = chess.Board()
+    game = chess.pgn.Game()
+    game.headers["Event"] = "Blunder correction"
+    game.headers["Site"] = "chess-trainer"
+    game.headers["Date"] = (game_row["created_at"] or "????.??.??")[:10].replace("-", ".")
+    game.headers["White"] = "White" if game_row["player_color"] == "white" else "Opponent"
+    game.headers["Black"] = "Black" if game_row["player_color"] == "black" else "Opponent"
+    game.headers["Result"] = "*"
+    if game_row["opening_name"]:
+        game.headers["Opening"] = game_row["opening_name"]
+
+    node = game
+    for uci in (game_row["moves"] or "").split()[:ply]:
+        move = chess.Move.from_uci(uci)
+        node = node.add_variation(move)
+        board.push(move)
+
+    exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
+    return game.accept(exporter)

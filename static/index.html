@@ -286,7 +286,14 @@
             <button id="fx-hint" class="btn btn-quiet">Hint</button>
             <button id="fx-bookmark" class="btn btn-quiet" aria-pressed="false">☆ Keep</button>
           </div>
+          <div class="board-actions">
+            <button id="fx-copy-pgn" class="btn btn-quiet">Copy PGN</button>
+            <button id="fx-copy-fen" class="btn btn-quiet">Copy FEN</button>
+            <a id="fx-lichess" class="btn btn-quiet" target="_blank" rel="noopener">Open in lichess</a>
+          </div>
 
+          <textarea id="fx-copy-box" class="copy-box" readonly hidden
+                    aria-label="Copy this text"></textarea>
           <div id="fx-result" hidden></div>
 
           <div class="board-actions">

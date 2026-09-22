@@ -29,7 +29,8 @@ from pydantic import BaseModel, Field
 
 from .chesscom import ChessCom, convert as convert_game, wanted
 from .coach import Coach
-from .corrections import Blunder, blunders_in, position_before, rank, verdict
+from .corrections import (FORGIVEN, Blunder, blunders_in, pgn_to_here,
+                          position_before, rank, verdict)
 from .db import Database, now
 from .engines import Stockfish
 from .eval import eval_win_percent
@@ -111,10 +112,15 @@ DEFAULT_SETTINGS: dict = {
 #: that most of these motifs live in.
 GUARD_DEPTH = 10
 
-#: Depth for judging a correction. Shallower than a review because it runs
-#: while the player waits, and deep enough that "does this throw it away" is
-#: not in doubt at this level.
-CORRECTION_DEPTH = 14
+#: Depth for judging a correction. Shallower than a review because "does this
+#: throw it away" is a much easier question than "what is the best move", and
+#: because the sweep below is quadratic in depth: at 14 it takes 9s, at 12 it
+#: takes 1.6s, and the verdicts are the same.
+CORRECTION_DEPTH = 12
+
+#: How many moves the sweep ranks. Covers every move worth considering in a
+#: middlegame position; anything outside it is worse than the worst of them.
+CORRECTION_MULTIPV = 24
 
 
 def effective_settings() -> dict:
@@ -198,6 +204,9 @@ async def lifespan(_: FastAPI):
                        "skipped": 0, "reviewed": 0, "to_review": 0, "error": None}
     state["watch"] = {"checked_at": None, "found_at": None, "new_games": 0, "error": None}
     state["backfill"] = {"running": False, "done": 0, "total": 0, "error": None}
+    #: Pre-computed move rankings for correction positions, keyed "game:ply".
+    state["move_ranks"] = {}
+    state["user_engine_at"] = None
     state["watcher"] = asyncio.create_task(_watch_chesscom())
     state["rng"] = random.Random()
     state["curricula"] = {}
@@ -781,6 +790,23 @@ async def _review_pending(limit: int) -> None:
 #: next mate hint. Importing is only HTTP and is never held back.
 QUIET_BEFORE_REVIEW = timedelta(minutes=10)
 
+#: How long after you last made the engine do something for you a background
+#: job should keep its hands off it. Playing is not the only interactive use:
+#: judging a correction and reading a puzzle's continuation both queue behind
+#: whatever the backfill is chewing on, which is exactly how "checking that
+#: move" came to take two seconds.
+ENGINE_QUIET_SECONDS = 90
+
+
+def _touch_engine() -> None:
+    """Record that the player is using the engine right now."""
+    state["user_engine_at"] = time.monotonic()
+
+
+def _engine_in_demand() -> bool:
+    last = state.get("user_engine_at")
+    return last is not None and time.monotonic() - last < ENGINE_QUIET_SECONDS
+
 
 async def _watch_chesscom() -> None:
     """Poll for games you have just finished, and pull them in.
@@ -879,9 +905,10 @@ async def get_game(game_id: int):
 
 @app.post("/api/games/{game_id}/moves")
 async def play_move(game_id: int, move_in: MoveIn):
-    # Tells the chess.com watcher to keep off the engine: reviews and your
-    # moves share one Stockfish behind one lock.
+    # Tells background jobs to keep off the engine: reviews and your moves
+    # share one Stockfish behind one lock.
     state["last_move_at"] = time.monotonic()
+    _touch_engine()
     row = db().get_game(game_id)
     if row is None:
         raise HTTPException(404, "No such game")
@@ -1502,6 +1529,7 @@ async def puzzle_reveal_type(puzzle_id: str):
 
 @app.post("/api/puzzles/{puzzle_id}/continuation")
 async def puzzle_continuation(puzzle_id: str, depth: int = 18):
+    _touch_engine()
     """What happens next, once the puzzle's own line runs out.
 
     A puzzle stops at the point the tactic is won, which is exactly where the
@@ -1650,6 +1678,9 @@ def correction_payload(blunder: Blunder, attempt, *, reveal: bool = False,
         "played_at": blunder.played_at,
         "motifs": list(blunder.motifs),
         "bookmarked": (blunder.game_id, blunder.ply) in marks,
+        # For taking the position somewhere else — lichess, an engine, a friend.
+        "lichess_url": "https://lichess.org/analysis/standard/"
+                       + blunder.fen.replace(" ", "_"),
         "wrong": attempt["wrong"] if attempt else 0,
         "hints": attempt["hints"] if attempt else 0,
         "status": "playing",
@@ -1681,13 +1712,59 @@ async def corrections_status():
     }
 
 
+async def _rank_moves(blunder: Blunder) -> dict:
+    """Score every plausible move in one sweep, so judging is a lookup.
+
+    Analysing after the fact costs a second engine call per attempt and leaves
+    the player watching "Checking that move..." for a second and a half. One
+    MultiPV sweep of the position they are already looking at costs about the
+    same, happens while they think, and then answers every attempt instantly —
+    including the retries, which is where the wait was most annoying.
+    """
+    board = chess.Board(blunder.fen)
+    white = blunder.color == chess.WHITE
+    lines = await state["stockfish"].analyse(
+        board, depth=CORRECTION_DEPTH,
+        multipv=min(CORRECTION_MULTIPV, board.legal_moves.count()))
+    if not lines:
+        return {}
+    scored = {}
+    for line in lines:
+        if line.best_move:
+            scored[line.best_move.uci()] = eval_win_percent(line.score.pov(white))
+    best = lines[0]
+    return {
+        "moves": scored,
+        "best_uci": best.best_move.uci() if best.best_move else None,
+        "best_san": board.san(best.best_move) if best.best_move else None,
+        "best_win": eval_win_percent(best.score.pov(white)),
+        "best_line": best.pv_san(board, limit=5),
+        # Everything outside the sweep is worse than its weakest entry, so if
+        # that already fails there is no need to analyse an unranked move.
+        "floor": min(scored.values()) if scored else None,
+        "ranked": len(scored),
+    }
+
+
+async def _warm_ranking(blunder: Blunder) -> None:
+    try:
+        state["move_ranks"][blunder.key] = await _rank_moves(blunder)
+    except Exception:  # noqa: BLE001 - judging falls back to analysing directly
+        log.warning("move ranking failed for %s", blunder.key, exc_info=True)
+
+
 @app.post("/api/corrections/next")
 async def next_correction():
     """The worst blunder you have not replayed yet."""
+    _touch_engine()
     open_row = db().open_correction()
     if open_row is not None:
         blunder = find_blunder(open_row["game_id"], open_row["ply"])
         if blunder is not None:
+            # Resuming counts as serving: reloading the page must not leave the
+            # position unswept and every attempt back on the slow path.
+            if blunder.key not in state["move_ranks"]:
+                asyncio.create_task(_warm_ranking(blunder))
             return correction_payload(blunder, open_row)
         db().abandon_open_corrections()      # the review changed under it
 
@@ -1700,12 +1777,14 @@ async def next_correction():
         raise HTTPException(409, "You have replayed every blunder on record")
 
     db().serve_correction(nxt.game_id, nxt.ply)
+    asyncio.create_task(_warm_ranking(nxt))     # while they look at it
     return correction_payload(nxt, db().open_correction())
 
 
 @app.post("/api/corrections/{game_id}/{ply}/move")
 async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
     """Judge a replacement move by what it gives away, not by matching a string."""
+    _touch_engine()
     attempt = db().open_correction()
     if attempt is None or (attempt["game_id"], attempt["ply"]) != (game_id, ply):
         raise HTTPException(404, "That position is not the one in progress")
@@ -1722,29 +1801,63 @@ async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
         raise HTTPException(400, f"{move_in.uci} is not legal here")
 
     white = blunder.color == chess.WHITE
-    best_lines = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
-    after = board.copy()
-    after.push(move)
-    played_lines = await state["stockfish"].analyse(after, depth=CORRECTION_DEPTH, multipv=1)
-    if not best_lines or not played_lines:
-        raise HTTPException(503, "The engine is not available")
+    ranking = state["move_ranks"].get(blunder.key) or {}
+    ranked = ranking.get("moves") or {}
 
-    result = verdict(
-        eval_win_percent(best_lines[0].score.pov(white)),
-        eval_win_percent(played_lines[0].score.pov(white)),
-    )
+    if move.uci() in ranked:
+        # The common path: the sweep already scored this move, so the verdict
+        # is a dictionary lookup and the player waits for nothing.
+        result = verdict(ranking["best_win"], ranked[move.uci()])
+        engine_best_uci = ranking.get("best_uci")
+        engine_best_san = ranking.get("best_san")
+        engine_line = ranking.get("best_line") or []
+        after = board.copy()
+        after.push(move)
+        reply = []
+    elif ranked and ranking.get("floor") is not None \
+            and ranking["best_win"] - ranking["floor"] >= FORGIVEN:
+        # Outside the sweep, and the weakest move in it already fails — so this
+        # one fails too, without asking the engine again.
+        result = verdict(ranking["best_win"], ranking["floor"])
+        result["unranked"] = True
+        engine_best_uci = ranking.get("best_uci")
+        engine_best_san = ranking.get("best_san")
+        engine_line = ranking.get("best_line") or []
+        after = board.copy()
+        after.push(move)
+        reply = []
+    else:
+        # The sweep has not landed yet, or the position is quiet enough that
+        # even its weakest ranked move holds. Fall back to analysing directly.
+        best_lines = await state["stockfish"].analyse(
+            board, depth=CORRECTION_DEPTH, multipv=1)
+        after = board.copy()
+        after.push(move)
+        played_lines = await state["stockfish"].analyse(
+            after, depth=CORRECTION_DEPTH, multipv=1)
+        if not best_lines or not played_lines:
+            raise HTTPException(503, "The engine is not available")
+        result = verdict(
+            eval_win_percent(best_lines[0].score.pov(white)),
+            eval_win_percent(played_lines[0].score.pov(white)),
+        )
+        best_move = best_lines[0].best_move
+        engine_best_uci = best_move.uci() if best_move else None
+        engine_best_san = board.san(best_move) if best_move else None
+        engine_line = best_lines[0].pv_san(board, limit=5)
+        reply = played_lines[0].pv_san(after, limit=4)
+
     result["san"] = board.san(move)
     result["uci"] = move.uci()
     # The position your move produced. Sent so the board can show the move go
     # in and then take it back, rather than the piece silently snapping home.
     result["fen_after"] = after.fen()
-    result["reply"] = played_lines[0].pv_san(after, limit=4)
-    engine_best = best_lines[0].best_move
-    result["engine_best"] = board.san(engine_best) if engine_best else None
+    result["reply"] = reply
+    result["engine_best"] = engine_best_san
     # UCI too: the browser has no chess library and cannot turn "Bf1+" into a
     # pair of squares to draw an arrow between.
-    result["engine_best_uci"] = engine_best.uci() if engine_best else None
-    result["engine_line"] = best_lines[0].pv_san(board, limit=5)
+    result["engine_best_uci"] = engine_best_uci
+    result["engine_line"] = engine_line
 
     wrong = attempt["wrong"] + (0 if result["held"] else 1)
     if result["held"]:
@@ -1782,6 +1895,7 @@ async def correction_hint(game_id: int, ply: int, level: int = 1):
 
 @app.post("/api/corrections/{game_id}/{ply}/give_up")
 async def correction_give_up(game_id: int, ply: int):
+    _touch_engine()
     attempt = db().open_correction()
     if attempt is None or (attempt["game_id"], attempt["ply"]) != (game_id, ply):
         raise HTTPException(404, "That position is not the one in progress")
@@ -1800,6 +1914,16 @@ async def correction_give_up(game_id: int, ply: int):
     return correction_payload(blunder, db().open_correction() or attempt,
                               reveal=True,
                               extra={"status": "shown", "attempt": shown})
+
+
+@app.get("/api/corrections/{game_id}/{ply}/pgn")
+async def correction_pgn(game_id: int, ply: int):
+    """The game up to this position, as PGN."""
+    row = db().get_game(game_id)
+    if row is None:
+        raise HTTPException(404, "No such game")
+    return {"pgn": pgn_to_here(row, ply), "fen": position_before(
+        (row["moves"] or "").split(), ply).fen()}
 
 
 @app.post("/api/corrections/{game_id}/{ply}/bookmark")
@@ -1827,6 +1951,7 @@ async def correction_retry(game_id: int, ply: int):
         raise HTTPException(404, "No such blunder")
     db().abandon_open_corrections()
     db().serve_correction(game_id, ply)
+    asyncio.create_task(_warm_ranking(blunder))
     return correction_payload(blunder, db().open_correction())
 
 
@@ -1878,8 +2003,8 @@ async def _run_backfill(game_ids: list[int]) -> None:
         for game_id in game_ids:
             if not progress["running"]:
                 break                      # asked to stop
-            while _game_in_progress():
-                await asyncio.sleep(30)    # your move comes first
+            while _game_in_progress() or _engine_in_demand():
+                await asyncio.sleep(15)    # anything you are doing comes first
                 if not progress["running"]:
                     return
             db().upsert_review(game_id, "pending")

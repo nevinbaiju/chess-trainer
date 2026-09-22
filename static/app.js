@@ -2123,6 +2123,7 @@ function applyFix(c) {
     state.fixHint = 0
     $("fx-result").hidden = true
     $("fx-key").hidden = true
+    $("fx-copy-box").hidden = true
   }
   if (c.status === "playing") board.removeArrows()
 
@@ -2132,6 +2133,7 @@ function applyFix(c) {
     `You went wrong here — find something that holds.`
   $("fx-side").textContent = c.you_play
   $("fx-cost").textContent = `${c.cost}% of your winning chances`
+  $("fx-lichess").href = c.lichess_url || "#"
   $("fx-hint").textContent = state.fixHint === 0 ? "Hint" : "Where to?"
   $("fx-hint").hidden = c.status !== "playing" || state.fixHint >= 2
   setFixBookmark(c.bookmarked)
@@ -2329,4 +2331,67 @@ $("fx-bookmark-list").addEventListener("click", async (e) => {
   state.fix = null
   applyFix(await api(
     `/api/corrections/${row.dataset.game}/${row.dataset.ply}/retry`, {method: "POST"}))
+})
+
+
+/* Take the position elsewhere. The clipboard API needs a secure context, which
+   the app has behind TLS but not over plain http on the LAN — so there is a
+   fallback that still works rather than a button that silently does nothing. */
+async function copyText(text, button, done = "Copied") {
+  const original = button.textContent
+  if (await writeClipboard(text)) {
+    button.textContent = done
+    setTimeout(() => { button.textContent = original }, 1600)
+    return
+  }
+  // Both paths can fail: the async API needs a secure context and a focused
+  // document, and execCommand is gone in some browsers. Rather than a button
+  // that appears to do nothing, put the text on screen ready to be copied.
+  showCopyFallback(text)
+  button.textContent = original
+}
+
+async function writeClipboard(text) {
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch (err) {
+    console.warn("clipboard API refused", err)
+  }
+  try {
+    const area = document.createElement("textarea")
+    area.value = text
+    area.setAttribute("readonly", "")
+    area.style.position = "fixed"
+    area.style.top = "-1000px"
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand("copy")
+    area.remove()
+    return ok
+  } catch (err) {
+    console.warn("execCommand copy refused", err)
+    return false
+  }
+}
+
+function showCopyFallback(text) {
+  const box = $("fx-copy-box")
+  box.value = text
+  box.hidden = false
+  box.focus()
+  box.select()
+}
+
+$("fx-copy-pgn").addEventListener("click", async () => {
+  if (!state.fix) return
+  const d = await api(`/api/corrections/${state.fix.game_id}/${state.fix.ply}/pgn`)
+  await copyText(d.pgn, $("fx-copy-pgn"), "PGN copied")
+})
+
+$("fx-copy-fen").addEventListener("click", async () => {
+  if (!state.fix) return
+  await copyText(state.fix.fen, $("fx-copy-fen"), "FEN copied")
 })
