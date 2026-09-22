@@ -206,6 +206,7 @@ async def lifespan(_: FastAPI):
     state["backfill"] = {"running": False, "done": 0, "total": 0, "error": None}
     #: Pre-computed move rankings for correction positions, keyed "game:ply".
     state["move_ranks"] = {}
+    state["rank_tasks"] = {}
     state["user_engine_at"] = None
     state["watcher"] = asyncio.create_task(_watch_chesscom())
     state["rng"] = random.Random()
@@ -1746,11 +1747,44 @@ async def _rank_moves(blunder: Blunder) -> dict:
     }
 
 
-async def _warm_ranking(blunder: Blunder) -> None:
+def _warm_ranking(blunder: Blunder) -> asyncio.Task:
+    """Start the sweep, and keep the task so a move can wait on it.
+
+    Keeping only the result was a trap: a move played before the sweep landed
+    fell through to analysing directly, and those analyses queued *behind* the
+    sweep on the engine lock. Racing the thing you are waiting for made the
+    worst case 4.5s — worse than having no sweep at all.
+    """
+    existing = state["rank_tasks"].get(blunder.key)
+    if existing is not None and not existing.done():
+        return existing
+
+    async def run():
+        try:
+            ranking = await _rank_moves(blunder)
+            state["move_ranks"][blunder.key] = ranking
+            return ranking
+        except Exception:  # noqa: BLE001 - judging falls back to analysing
+            log.warning("move ranking failed for %s", blunder.key, exc_info=True)
+            return {}
+
+    task = asyncio.create_task(run())
+    state["rank_tasks"][blunder.key] = task
+    return task
+
+
+async def _ranking_for(blunder: Blunder) -> dict:
+    """The sweep for this position, waiting on it if it is already running."""
+    ready = state["move_ranks"].get(blunder.key)
+    if ready is not None:
+        return ready
+    task = state["rank_tasks"].get(blunder.key)
+    if task is None:
+        task = _warm_ranking(blunder)
     try:
-        state["move_ranks"][blunder.key] = await _rank_moves(blunder)
-    except Exception:  # noqa: BLE001 - judging falls back to analysing directly
-        log.warning("move ranking failed for %s", blunder.key, exc_info=True)
+        return await task or {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 @app.post("/api/corrections/next")
@@ -1764,7 +1798,7 @@ async def next_correction():
             # Resuming counts as serving: reloading the page must not leave the
             # position unswept and every attempt back on the slow path.
             if blunder.key not in state["move_ranks"]:
-                asyncio.create_task(_warm_ranking(blunder))
+                _warm_ranking(blunder)
             return correction_payload(blunder, open_row)
         db().abandon_open_corrections()      # the review changed under it
 
@@ -1777,7 +1811,7 @@ async def next_correction():
         raise HTTPException(409, "You have replayed every blunder on record")
 
     db().serve_correction(nxt.game_id, nxt.ply)
-    asyncio.create_task(_warm_ranking(nxt))     # while they look at it
+    _warm_ranking(nxt)                          # while they look at it
     return correction_payload(nxt, db().open_correction())
 
 
@@ -1801,7 +1835,9 @@ async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
         raise HTTPException(400, f"{move_in.uci} is not legal here")
 
     white = blunder.color == chess.WHITE
-    ranking = state["move_ranks"].get(blunder.key) or {}
+    # Wait for the sweep rather than starting analyses that would queue behind
+    # it. If it has already landed this returns immediately.
+    ranking = await _ranking_for(blunder)
     ranked = ranking.get("moves") or {}
 
     if move.uci() in ranked:
@@ -1951,7 +1987,7 @@ async def correction_retry(game_id: int, ply: int):
         raise HTTPException(404, "No such blunder")
     db().abandon_open_corrections()
     db().serve_correction(game_id, ply)
-    asyncio.create_task(_warm_ranking(blunder))
+    _warm_ranking(blunder)
     return correction_payload(blunder, db().open_correction())
 
 

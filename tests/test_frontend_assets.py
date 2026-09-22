@@ -223,4 +223,7 @@ def test_a_correction_that_does_not_hold_is_taken_back_visibly():
     body = js[js.index("async function submitFixMove"):]
     body = body[:body.index("\n$(")]
     assert "fen_after" in body, "the post-move position has to be shown first"
-    assert "taken back" in body
+    assert "taking it back" in body
+    # The verdict must be on screen before the wind-back plays, or a 90ms
+    # answer looks like a second of thinking — which is how it looked.
+    assert body.index("gives away") < body.index("BACKTRACK_MS")

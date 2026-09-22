@@ -2078,6 +2078,10 @@ $("pz-bookmark-list").addEventListener("click", async (e) => {
    fine, and failing someone for a good one teaches only that the app is
    arbitrary. */
 
+/* How long the refused move sits on the board before being wound off. Long
+   enough to register what you did, short enough not to feel like waiting. */
+const BACKTRACK_MS = 420
+
 let fixBoard = null
 const ensureFixBoard = () => (fixBoard ||= makeBoard($("fixboard")))
 
@@ -2252,23 +2256,20 @@ async function submitFixMove(uci) {
   const c = state.fix
   const board = ensureFixBoard()
   board.disableMoveInput()
-  $("fx-status").textContent = "Checking that move…"
+  $("fx-status").textContent = "Checking…"
   try {
     const next = await api(`/api/corrections/${c.game_id}/${c.ply}/move`, {
       method: "POST", body: JSON.stringify({uci}),
     })
-    // A move that does not hold is taken back rather than merely refused: let
-    // it land so you can see what you did, then wind it off the board. Same
-    // bargain as a rep — the position comes back and you try again.
     if (next.status === "playing" && next.attempt?.fen_after) {
-      board.setPosition(next.attempt.fen_after, true)
-      await new Promise((r) => setTimeout(r, 850))
-      const lost = next.attempt.lost
-      $("fx-status").textContent =
-        `${next.attempt.san} gives away ${lost}% — taken back, try again.`
+      // Say the verdict the instant it arrives. The wind-back that follows is
+      // deliberate, but leaving "Checking..." up while it plays made a 130ms
+      // answer look like a second of thinking — which is what it looked like.
+      const {san, lost} = next.attempt
+      $("fx-status").textContent = `${san} gives away ${lost}% — taking it back…`
+      await new Promise((r) => setTimeout(r, BACKTRACK_MS))
       applyFix(next)
-      $("fx-status").textContent =
-        `${next.attempt.san} gives away ${lost}% — taken back, try again.`
+      $("fx-status").textContent = `${san} gives away ${lost}% — try again.`
       return
     }
     applyFix(next)
@@ -2395,3 +2396,6 @@ $("fx-copy-fen").addEventListener("click", async () => {
   if (!state.fix) return
   await copyText(state.fix.fen, $("fx-copy-fen"), "FEN copied")
 })
+
+// test hook: the legal moves of the position on the Fix board
+window.state_legal = () => state.fix?.legal_moves || []

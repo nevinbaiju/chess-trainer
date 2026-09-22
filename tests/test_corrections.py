@@ -164,7 +164,22 @@ def test_the_position_is_swept_when_it_is_served_not_when_a_move_arrives():
     source = _main()
     body = source[source.index("async def next_correction"):source.index("async def correction_move")]
     assert "_warm_ranking" in body
-    assert "create_task" in body, "the sweep must not block serving the position"
+
+    warm = source[source.index("def _warm_ranking"):source.index("async def _ranking_for")]
+    assert "create_task" in warm, "the sweep must not block serving the position"
+
+
+def test_a_move_waits_for_the_sweep_rather_than_racing_it():
+    """Keeping only the result was a trap: a move played before the sweep landed
+    fell through to analysing directly, and those analyses queued *behind* the
+    sweep on the engine lock. Racing the thing you are waiting for made the
+    worst case 4.5s — worse than having no sweep at all."""
+    source = _main()
+    assert "async def _ranking_for" in source
+    body = source[source.index("async def correction_move"):source.index("async def correction_hint")]
+    assert "await _ranking_for(blunder)" in body
+    ranking = source[source.index("async def _ranking_for"):source.index("@app.post(\"/api/corrections/next\")")]
+    assert "await task" in ranking, "an in-flight sweep must be awaited, not duplicated"
 
 
 def test_an_unranked_move_is_refused_without_a_second_opinion():
