@@ -256,3 +256,28 @@ def test_the_live_puzzle_row_carries_every_column_of_both_tables(tmp_path):
             if column == "id":
                 continue          # joined in as puzzle_id
             assert column in have, f"current_puzzle() does not select {table}.{column}"
+
+
+def test_the_solution_is_shown_in_notation_a_person_can_read():
+    """It was rendered as raw UCI from the dump: "g4c8 e7d8 e4f6" reads as a
+    different game entirely, which is exactly how it was reported — as the
+    puzzle asking for the wrong move."""
+    import pathlib
+    source = (pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py").read_text()
+    body = source[source.index("def puzzle_payload"):source.index("def type_payload")]
+    assert '"solution": [step["san"] for step in solution_line(' in body
+    assert '"solution_uci"' in body, "keep the UCI too, for anything that needs squares"
+
+
+def test_the_puzzle_links_out_only_once_it_is_over():
+    """Its lichess page shows the solution, so linking to it mid-puzzle hands
+    over the answer."""
+    import pathlib
+    source = (pathlib.Path(__file__).resolve().parent.parent / "app" / "main.py").read_text()
+    body = source[source.index("def puzzle_payload"):source.index("def type_payload")]
+    reveal = body[body.index("if reveal:"):]
+    assert "lichess_puzzle" in reveal
+    assert "lichess_puzzle" not in body[:body.index("if reveal:")]
+
+    js = (pathlib.Path(__file__).resolve().parent.parent / "static" / "app.js").read_text()
+    assert '$("pz-lichess-puzzle").hidden = true' in js, "and hidden again on the next one"

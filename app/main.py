@@ -1387,6 +1387,8 @@ def puzzle_payload(row, *, reveal: bool = False) -> dict:
         "hints": row["hints"],
         "rating": row["rating"],
         "bookmarked": bool(row["bookmarked"]),
+        "lichess_url": "https://lichess.org/analysis/standard/"
+                       + board.fen().replace(" ", "_"),
         "status": "playing",
     }
     if reveal:
@@ -1394,7 +1396,11 @@ def puzzle_payload(row, *, reveal: bool = False) -> dict:
         unaided = row["wrong"] == 0 and row["hints"] == 0
         payload.update({
             "status": "solved" if unaided else "solved_with_help",
-            "solution": moves[1:],
+            # SAN, not the raw UCI from the dump. "g4c8 e7d8 e4f6" is not a
+            # solution anyone can read — it looks like a different game.
+            "solution": [step["san"] for step in solution_line(row["fen"], moves)],
+            "solution_uci": moves[1:],
+            "lichess_puzzle": f"https://lichess.org/training/{row['puzzle_id'] if 'puzzle_id' in row.keys() else row['id']}",
             # Every position the solution passes through, so the front end can
             # animate it and then step back and forth without needing any chess
             # rules of its own.

@@ -1776,7 +1776,10 @@ function applyPuzzle(p, keepDisclosures) {
     $("pz-replay").hidden = true
     $("pz-result").hidden = true
     $("pz-after").hidden = true
+    $("pz-copy-box").hidden = true
+    $("pz-lichess-puzzle").hidden = true
   }
+  $("pz-lichess").href = p.lichess_url || "#"
   $("pz-hint").textContent = state.hintLevel === 0 ? "Hint" : "Where to?"
   $("pz-hint").hidden = p.status !== "playing" || state.hintLevel >= 2
   setBookmarkButton(p.bookmarked)
@@ -1813,12 +1816,18 @@ function showPuzzleResult(p) {
     <p class="hint">Chosen because <b>${escapeHtml(motifLabel(p.motif))}</b> is
       one of your commonest mistakes${p.direction === "inverted"
         ? " — this is that pattern from the winning side" : ""}.
-      Solution: <b>${(p.solution || []).join(" ")}</b>${
+      Solution: <b>${escapeHtml((p.solution || []).join(" "))}</b>${
         p.rating ? ` · lichess rating ${p.rating}` : ""}</p>`
   $("pz-result").hidden = false
   showDisclosure("pz-show-length", "pz-progress", true)
   showDisclosure("pz-show-type", "pz-type", true)
   $("pz-type").textContent = motifLabel(p.motif)
+  // Only once it is over: the link names the puzzle, and its lichess page
+  // shows the solution.
+  if (p.lichess_puzzle) {
+    $("pz-lichess-puzzle").href = p.lichess_puzzle
+    $("pz-lichess-puzzle").hidden = false
+  }
   loadPuzzles().catch(() => {})
 
   showContinuation(p).catch((e) => console.error(e))
@@ -2348,7 +2357,7 @@ async function copyText(text, button, done = "Copied") {
   // Both paths can fail: the async API needs a secure context and a focused
   // document, and execCommand is gone in some browsers. Rather than a button
   // that appears to do nothing, put the text on screen ready to be copied.
-  showCopyFallback(text)
+  showCopyFallback(text, button.id.startsWith("pz-") ? "pz-copy-box" : "fx-copy-box")
   button.textContent = original
 }
 
@@ -2378,8 +2387,8 @@ async function writeClipboard(text) {
   }
 }
 
-function showCopyFallback(text) {
-  const box = $("fx-copy-box")
+function showCopyFallback(text, boxId = "fx-copy-box") {
+  const box = $(boxId)
   box.value = text
   box.hidden = false
   box.focus()
@@ -2399,3 +2408,9 @@ $("fx-copy-fen").addEventListener("click", async () => {
 
 // test hook: the legal moves of the position on the Fix board
 window.state_legal = () => state.fix?.legal_moves || []
+
+
+$("pz-copy-fen").addEventListener("click", async () => {
+  if (!state.puzzle) return
+  await copyText(state.puzzle.fen, $("pz-copy-fen"), "FEN copied")
+})

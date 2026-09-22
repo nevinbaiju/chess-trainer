@@ -217,6 +217,13 @@
             <button id="pz-hint" class="btn btn-quiet">Hint</button>
             <button id="pz-bookmark" class="btn btn-quiet" aria-pressed="false">☆ Keep</button>
           </div>
+          <div class="board-actions">
+            <button id="pz-copy-fen" class="btn btn-quiet">Copy FEN</button>
+            <a id="pz-lichess" class="btn btn-quiet" target="_blank" rel="noopener">Analyse on lichess</a>
+            <a id="pz-lichess-puzzle" class="btn btn-quiet" target="_blank" rel="noopener" hidden>This puzzle on lichess</a>
+          </div>
+          <textarea id="pz-copy-box" class="copy-box" readonly hidden
+                    aria-label="Copy this text"></textarea>
 
           <div id="pz-result" hidden></div>
 
