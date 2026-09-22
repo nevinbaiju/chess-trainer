@@ -2517,7 +2517,11 @@ function startFixExplore(firstMove, comparison) {
   state.fixLine = {
     moves: firstMove ? [firstMove] : [],
     curve: [], fen: null, busy: false,
-    cursor: null,          // null = follow the end of the line
+    // Start on the blunder position, not after the move that held. This is the
+    // moment the comparison is worth seeing — what you played then, what the
+    // engine wanted, what you just found — and the first refresh used to wipe
+    // it off the board before anyone had read it. Forward steps into the line.
+    cursor: 0,
     // What you played then, what the engine wanted, what you just tried. Kept
     // so rewinding to the blunder can put all three back on the board.
     comparison,
@@ -2681,9 +2685,12 @@ function updateFixNav(d) {
   $("fx-back").disabled = at === 0
   $("fx-fwd").disabled = at >= total
   $("fx-undo").disabled = total <= 1 || at < total
-  $("fx-nav-note").textContent = at >= total
-    ? ""
-    : `Rewound to move ${at} of ${total} — play a move here to take the line a different way.`
+  $("fx-nav-note").textContent =
+    at >= total ? ""
+    : at === 0
+      ? "This is the position itself — the arrows are what you played then, what "
+        + "the engine wanted, and what you found. Forward to play the line on."
+      : `Rewound to move ${at} of ${total} — play a move here to take the line a different way.`
 }
 
 /* Rewinding moves the board, not the line: the graph keeps showing everything
