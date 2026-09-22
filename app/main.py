@@ -166,6 +166,10 @@ class ExploreLine(BaseModel):
     """Everything played since the blunder position, from that position."""
 
     moves: list[str] = Field(default_factory=list, max_length=80)
+    #: Where in that line to put the board. The curve is always drawn for the
+    #: whole line, so rewinding to look at something does not make the graph
+    #: shrink under you. None means the end.
+    at: int | None = Field(None, ge=0)
 
 
 class Bookmark(BaseModel):
@@ -1969,22 +1973,34 @@ async def correction_explore(game_id: int, ply: int, line: ExploreLine):
         board.push(move)
 
     curve = await _explore_curve(blunder, played)
+
+    # The board can sit anywhere in the line while the graph still shows all of
+    # it, so rewinding to look at something does not shrink the thing you are
+    # comparing against.
+    cursor = len(played) if line.at is None else min(line.at, len(played))
+    view = chess.Board(blunder.fen)
+    for move in played[:cursor]:
+        view.push(move)
+
     payload = {
-        "fen": board.fen(),
-        "turn": "white" if board.turn == chess.WHITE else "black",
-        "yours": board.turn == hero,
-        "legal_moves": [m.uci() for m in board.legal_moves],
+        "fen": view.fen(),
+        "turn": "white" if view.turn == chess.WHITE else "black",
+        "yours": view.turn == hero,
+        "legal_moves": [m.uci() for m in view.legal_moves],
         "san": _san_line(chess.Board(blunder.fen), played),
         "curve": curve,
-        "over": board.is_game_over(),
+        "cursor": cursor,
+        "plies": len(played),
+        "at_start": cursor == 0,
+        "over": view.is_game_over(),
     }
-    if board.is_game_over():
-        payload["outcome"] = board.result()
+    if view.is_game_over():
+        payload["outcome"] = view.result()
 
-    # Judge only the move just played, and only if it was the player's own.
-    # The blunder position is always theirs to move, so their moves are the
-    # odd ones in the line.
-    if played and len(played) % 2 == 1:
+    # Judge only the move just played, and only when the board is showing it —
+    # rewinding past a mistake should not keep shouting about it. The blunder
+    # position is always the player's to move, so their moves are the odd ones.
+    if cursor == len(played) and played and len(played) % 2 == 1:
         payload["judgment"] = await _explore_judgment(blunder, played)
     return payload
 

@@ -64,6 +64,10 @@ really went; the solid one is the line you are playing now, and you can play it
 on for both sides and watch them come apart. Only *your* moves are judged: the
 other side's are yours to choose, not to get wrong.
 
+Rewind through the line at any point without losing it, and branch off
+somewhere else. Rewinding to the start puts the comparison back on the board —
+what you played then, what the engine wanted, what you found instead.
+
 ![The two eval lines coming apart](docs/img/fix-graph.png)
 
 [More on all four](docs/features.md)

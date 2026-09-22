@@ -2233,9 +2233,16 @@ function showFixResult(c) {
   $("fx-result").hidden = false
 
   // Only once something holds is there a second line worth drawing. Seed it
-  // with the move that held — or, if they gave up, with the engine's.
+  // with the move that held — or, if they gave up, with the engine's. The
+  // three arrows go with it, so rewinding can put them back.
   const seed = held ? (a.uci || c.best_uci) : c.best_uci
-  if (seed) startFixExplore(seed)
+  if (seed) {
+    startFixExplore(seed, {
+      played_uci: c.played_uci,
+      engine_uci: a.engine_best_uci || c.best_uci,
+      yours_uci: a.uci,
+    })
+  }
 
   loadFix().catch(() => {})
 }
@@ -2449,6 +2456,20 @@ function fxPath(points, span) {
     .join(" ")
 }
 
+/* Where the board is sitting in the line. Only drawn while rewound: at the end
+   of the line the head dot already says it, and two dots on one point reads as
+   a bug. */
+function cursorMark(mine, span) {
+  const at = state.fixLine?.at
+  if (at == null || !mine.length || at >= mine.length - 1) return ""
+  const p = mine[at]
+  if (!p) return ""
+  return `<line class="fxg-cursor" x1="${fxX(p.ply, span).toFixed(1)}" y1="${FXG.padT}"
+            x2="${fxX(p.ply, span).toFixed(1)}" y2="${FXG.h - FXG.padB}"/>
+          <circle class="fxg-at" cx="${fxX(p.ply, span).toFixed(1)}"
+            cy="${fxY(p.win).toFixed(1)}" r="4.5"/>`
+}
+
 function renderFixGraph() {
   const card = $("fx-graph-card")
   const game = state.fix?.game_curve || []
@@ -2483,16 +2504,24 @@ function renderFixGraph() {
       ${mine.length > 1 ? `<path class="fxg-now" d="${fxPath(mine, span)}"/>` : ""}
       ${mine.length ? `<circle class="fxg-head" cx="${fxX(mine[mine.length - 1].ply, span).toFixed(1)}"
             cy="${fxY(mine[mine.length - 1].win).toFixed(1)}" r="4"/>` : ""}
+      ${cursorMark(mine, span)}
       ${ticks.join("")}
     </svg>`
 }
 
 /* ------------------------------------------------ fix: playing it on -- */
 
-function startFixExplore(firstMove) {
+function startFixExplore(firstMove, comparison) {
   // Seed the replayed line with the move that held, so the two curves diverge
   // at exactly the ply where the original game did.
-  state.fixLine = {moves: firstMove ? [firstMove] : [], curve: [], fen: null, busy: false}
+  state.fixLine = {
+    moves: firstMove ? [firstMove] : [],
+    curve: [], fen: null, busy: false,
+    cursor: null,          // null = follow the end of the line
+    // What you played then, what the engine wanted, what you just tried. Kept
+    // so rewinding to the blunder can put all three back on the board.
+    comparison,
+  }
   $("fx-explore").hidden = false
   refreshFixExplore().catch((e) => console.error(e))
 }
@@ -2506,22 +2535,35 @@ async function refreshFixExplore() {
   try {
     const d = await api(`/api/corrections/${c.game_id}/${c.ply}/explore`, {
       method: "POST",
-      body: JSON.stringify({moves: line.moves}),
+      body: JSON.stringify({moves: line.moves, at: line.cursor}),
     })
     line.curve = d.curve
     line.fen = d.fen
     line.legal = d.legal_moves
     line.san = d.san
     line.over = d.over
+    line.at = d.cursor
+    line.plies = d.plies
     renderFixGraph()
     showExploreLine(d)
+    updateFixNav(d)
     const board = ensureFixBoard()
     board.setPosition(d.fen, true)
     board.removeArrows()
-    if (d.judgment && !d.judgment.ok && d.judgment.best_uci) {
+
+    if (d.at_start) {
+      // Rewound all the way: this is the position the whole exercise is about,
+      // so put the comparison back rather than showing a bare board. It is the
+      // one thing worth being able to return to.
+      drawFixComparison(line.comparison)
+    } else if (d.judgment && !d.judgment.ok && d.judgment.best_uci) {
       board.addArrow(ARROW_TYPE.success,
         d.judgment.best_uci.slice(0, 2), d.judgment.best_uci.slice(2, 4))
+      $("fx-key").hidden = true
+    } else {
+      $("fx-key").hidden = true
     }
+
     // Both sides are yours to move: there is no opponent here, and inventing
     // one would be putting moves in its mouth.
     if (!d.over) setMoveInput(board, fixExploreInput, undefined)
@@ -2589,23 +2631,85 @@ function fixExploreInput(event) {
       ? plain
       : legal.find((m) => m.startsWith(plain) && m.length === 5) && plain + "q"
     if (!uci) return false
-    state.fixLine.moves.push(uci)
+    const line = state.fixLine
+    // Playing from a rewound position replaces what came after it, which is
+    // what taking a move back and trying another one means.
+    if (line.cursor !== null && line.cursor < line.moves.length) {
+      line.moves = line.moves.slice(0, line.cursor)
+    }
+    line.moves.push(uci)
+    line.cursor = null
     refreshFixExplore().catch((e) => console.error(e))
     return true
   }
   return true
 }
 
+/* The three moves that make this position worth replaying, drawn together:
+   what you played then, what the engine wanted, and what you found instead.
+   Reinstated whenever you rewind to the start, because that is the comparison
+   the whole exercise is about and it should not be a thing you saw once. */
+function drawFixComparison(cmp) {
+  const board = ensureFixBoard()
+  const key = $("fx-key")
+  if (!cmp) { key.hidden = true; return }
+
+  const drawn = []
+  if (cmp.played_uci) {
+    board.addArrow(ARROW_TYPE.danger, cmp.played_uci.slice(0, 2), cmp.played_uci.slice(2, 4))
+    drawn.push("danger")
+  }
+  if (cmp.engine_uci) {
+    board.addArrow(ARROW_TYPE.success, cmp.engine_uci.slice(0, 2), cmp.engine_uci.slice(2, 4))
+    drawn.push("success")
+  }
+  // Only a third arrow if it is actually a third move.
+  const sameAsEngine = cmp.yours_uci && cmp.yours_uci === cmp.engine_uci
+  if (cmp.yours_uci && !sameAsEngine) {
+    board.addArrow(ARROW_TYPE.warning, cmp.yours_uci.slice(0, 2), cmp.yours_uci.slice(2, 4))
+    drawn.push("warning")
+  }
+  key.hidden = drawn.length === 0
+  key.classList.toggle("no-engine", !cmp.engine_uci)
+  key.classList.toggle("no-yours", !cmp.yours_uci || sameAsEngine)
+}
+
+function updateFixNav(d) {
+  const at = d.cursor
+  const total = d.plies
+  $("fx-first").disabled = at === 0
+  $("fx-back").disabled = at === 0
+  $("fx-fwd").disabled = at >= total
+  $("fx-undo").disabled = total <= 1 || at < total
+  $("fx-nav-note").textContent = at >= total
+    ? ""
+    : `Rewound to move ${at} of ${total} — play a move here to take the line a different way.`
+}
+
+/* Rewinding moves the board, not the line: the graph keeps showing everything
+   you have played, so you can look back at where it went wrong without losing
+   the comparison you were building. Playing from a rewound point branches. */
+function fixSeek(delta) {
+  const line = state.fixLine
+  if (!line) return
+  const at = line.cursor === null ? line.moves.length : line.cursor
+  line.cursor = Math.max(0, Math.min(line.moves.length, at + delta))
+  refreshFixExplore().catch((e) => console.error(e))
+}
+
+$("fx-first").addEventListener("click", () => {
+  const line = state.fixLine
+  if (!line) return
+  line.cursor = 0
+  refreshFixExplore().catch((e) => console.error(e))
+})
+$("fx-back").addEventListener("click", () => fixSeek(-1))
+$("fx-fwd").addEventListener("click", () => fixSeek(1))
+
 $("fx-undo").addEventListener("click", () => {
   const line = state.fixLine
   if (!line || line.moves.length <= 1) return   // never back past the move that held
   line.moves.pop()
-  refreshFixExplore().catch((e) => console.error(e))
-})
-
-$("fx-reset").addEventListener("click", () => {
-  const line = state.fixLine
-  if (!line) return
-  line.moves = line.moves.slice(0, 1)
+  line.cursor = null
   refreshFixExplore().catch((e) => console.error(e))
 })

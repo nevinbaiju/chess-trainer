@@ -613,3 +613,6 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
 .fx-legend .k-now { border-top-width: 3px; color: var(--good); }
 .fx-h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em;
          color: var(--ink-soft); margin: .9rem 0 .3rem; }
+/* Where the board is sitting while you rewind through the replayed line. */
+.fxg-cursor { stroke: var(--ink-soft); stroke-width: 1; opacity: .45; stroke-dasharray: 2 3; }
+.fxg-at { fill: none; stroke: var(--good); stroke-width: 2.5; }

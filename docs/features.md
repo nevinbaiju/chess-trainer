@@ -248,6 +248,66 @@ Their own move classifications are not obtainable at all: staff confirmed they
 are regenerated on page load and never stored, so only the two `accuracies`
 floats exist. We run our own analysis and treat theirs as a sanity check.
 
+## Puzzles — chosen by what you get wrong
+
+Not a generic stream. The review already ranks your motifs by how many games
+they cost, and Lichess publishes its entire puzzle database under CC0 with a
+theme on every puzzle, so the two worst motifs pick what you are served.
+Difficulty tracks a band just above your rating: below it there is nothing to
+learn, far above it there is nothing to find.
+
+Hints come in two taps — first the motif, then the piece — so a stuck puzzle
+does not become a solved-for-you one. The selection moves as the weakness list
+does, which means clearing a weakness genuinely changes what you get.
+
+## Fix my blunder — replaying the games you lost
+
+The puzzles drill patterns you are statistically bad at. This drills the exact
+positions you lost from: same board, same move number, same choice.
+
+**A move is judged by what it gives away, not by matching a string.** At this
+level several moves are usually fine, and failing someone for a good move that
+happens not to be Stockfish's first choice teaches them nothing except that the
+app is arbitrary. Anything inside the review's inaccuracy threshold holds. The
+engine's own pick is shown afterwards regardless.
+
+**Only blunders, worst first.** A queue of every inaccuracy is a queue nobody
+works through.
+
+### The two lines
+
+Finding one move that holds is half of it. The other half is whether you are
+still holding it eight moves later — and the original game already answers that
+for the move you actually chose. So both futures are drawn on one graph from
+the same origin, the position as it stood before the blunder: the faded dashed
+line is the game as it really went, with your mistakes marked on it, and the
+solid line is what you are playing now.
+
+You can play the position on **for both sides**. There is no opponent here and
+guessing one would be inventing evidence, so the other side's moves are yours
+to choose — and only your own are judged, because being corrected on a move you
+played for the opponent would be scoring you on a choice you were not making.
+The threshold for interrupting is deliberately looser than the one the
+correction itself is judged by: this is exploration rather than an exam, and
+stopping someone on every inaccuracy makes playing a position out unbearable.
+
+### Rewinding
+
+**« / ‹ Rewind / Forward ›** move the board through the line without changing
+it, so the graph keeps showing everything you have played while you look back
+at where it went wrong. Playing a move from a rewound position branches —
+whatever came after is replaced, which is what taking a move back and trying
+something else means.
+
+Rewinding all the way to the start puts the **comparison** back on the board:
+what you played then, what the engine wanted, and what you found instead, with
+the key underneath. That comparison is the reason the position is in the queue
+at all, so it is always one click away rather than something you saw once and
+lost.
+
+**Take back** removes the last move outright. It stops at the move that held —
+the replay is not a route back into the blunder itself.
+
 ## Progress — the cross-game view
 
 At the top of the Review tab. A per-game review says what happened once; this is
