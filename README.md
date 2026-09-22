@@ -68,7 +68,12 @@ Rewind through the line at any point without losing it, and branch off
 somewhere else. Rewinding to the start puts the comparison back on the board —
 what you played then, what the engine wanted, what you found instead.
 
-![The two eval lines coming apart](docs/img/fix-graph.png)
+![Replaying a blunder: what you played, what the engine wanted, and where each line goes](docs/img/fix.png)
+
+Closer, the part that matters — the game collapsing while the line you are
+playing holds:
+
+![The two lines coming apart](docs/img/fix-graph.png)
 
 [More on all four](docs/features.md)
 
