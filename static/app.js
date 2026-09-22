@@ -2122,7 +2122,9 @@ function applyFix(c) {
   if (fresh) {
     state.fixHint = 0
     $("fx-result").hidden = true
+    $("fx-key").hidden = true
   }
+  if (c.status === "playing") board.removeArrows()
 
   const when = (c.played_at || "").slice(0, 10)
   $("fx-intro").textContent =
@@ -2160,20 +2162,48 @@ function showFixResult(c) {
   $("fx-status").textContent = ""
   const a = c.attempt || {}
 
+  // The comparison belongs on the board. Three moves matter here and prose
+  // makes the reader hold all three in their head at once: what you did then,
+  // what the engine does, and what you just tried.
+  const board = ensureFixBoard()
+  board.removeArrows()
+  board.removeMarkers()
+  const drawn = []
+  if (c.played_uci) {
+    board.addArrow(ARROW_TYPE.danger, c.played_uci.slice(0, 2), c.played_uci.slice(2, 4))
+    drawn.push("danger")
+  }
+  const engine = a.engine_best_uci
+  if (engine) {
+    board.addArrow(ARROW_TYPE.success, engine.slice(0, 2), engine.slice(2, 4))
+    drawn.push("success")
+  }
+  // Only worth a third arrow if it is actually a third move.
+  const sameAsEngine = a.uci && engine && a.uci === engine
+  if (a.uci && !sameAsEngine) {
+    board.addArrow(ARROW_TYPE.warning, a.uci.slice(0, 2), a.uci.slice(2, 4))
+    drawn.push("warning")
+  }
+  const key = $("fx-key")
+  key.hidden = drawn.length === 0
+  key.classList.toggle("no-engine", !engine)
+  key.classList.toggle("no-yours", !a.uci || sameAsEngine)
+
+  const verdictText = clean ? "Held, first try"
+    : held ? "Held, with help" : "Not found"
   const yours = a.san
-    ? `<p class="rep-explain">You played <b>${escapeHtml(a.san)}</b>${
-        a.lost != null ? ` — it gives away ${a.lost}%` : ""}.</p>`
+    ? (sameAsEngine
+        ? `<p class="rep-explain">You found <b>${escapeHtml(a.san)}</b> — the engine's move.</p>`
+        : `<p class="rep-explain">You played <b>${escapeHtml(a.san)}</b>, giving away
+             ${a.lost}% — ${a.lost < 1 ? "as good as the best" : "close enough to hold"}.</p>`)
     : ""
+
   $("fx-result").innerHTML = `
-    <div class="rep-verdict ${held ? "is-pass" : "is-miss"}">
-      ${clean ? "Held, first try" : held ? "Held, with help" : "Not found"}
-    </div>
+    <div class="rep-verdict ${held ? "is-pass" : "is-miss"}">${verdictText}</div>
     ${yours}
-    <p class="rep-explain">In the real game you played
-       <b>${escapeHtml(c.played_san || "?")}</b>, which cost ${c.cost}%.</p>
-    ${a.engine_best ? `<p class="hint">Stockfish plays
-       <b>${escapeHtml(a.engine_best)}</b>${a.engine_line?.length
-         ? ` — ${escapeHtml(a.engine_line.join(" "))}` : ""}.</p>` : ""}`
+    <p class="hint">Then: <b>${escapeHtml(c.played_san || "?")}</b> (−${c.cost}%)
+       · Engine: <b>${escapeHtml(a.engine_best || "?")}</b>${
+         a.engine_line?.length ? ` — ${escapeHtml(a.engine_line.join(" "))}` : ""}</p>`
   $("fx-result").hidden = false
   loadFix().catch(() => {})
 }
@@ -2218,12 +2248,28 @@ function fixTargets(from) {
 
 async function submitFixMove(uci) {
   const c = state.fix
-  ensureFixBoard().disableMoveInput()
+  const board = ensureFixBoard()
+  board.disableMoveInput()
   $("fx-status").textContent = "Checking that move…"
   try {
-    applyFix(await api(`/api/corrections/${c.game_id}/${c.ply}/move`, {
+    const next = await api(`/api/corrections/${c.game_id}/${c.ply}/move`, {
       method: "POST", body: JSON.stringify({uci}),
-    }))
+    })
+    // A move that does not hold is taken back rather than merely refused: let
+    // it land so you can see what you did, then wind it off the board. Same
+    // bargain as a rep — the position comes back and you try again.
+    if (next.status === "playing" && next.attempt?.fen_after) {
+      board.setPosition(next.attempt.fen_after, true)
+      await new Promise((r) => setTimeout(r, 850))
+      const lost = next.attempt.lost
+      $("fx-status").textContent =
+        `${next.attempt.san} gives away ${lost}% — taken back, try again.`
+      applyFix(next)
+      $("fx-status").textContent =
+        `${next.attempt.san} gives away ${lost}% — taken back, try again.`
+      return
+    }
+    applyFix(next)
   } catch (err) {
     $("fx-status").textContent = err.message
     applyFix(state.fix)

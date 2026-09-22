@@ -193,3 +193,34 @@ def test_a_solved_puzzle_does_not_replay_itself():
     animate = body.index("animateSolution")
     guard = body.index('p.status === "gave_up"')
     assert guard < animate, "the guard has to come before the call it guards"
+
+
+def test_the_fix_arrows_reuse_the_house_colours():
+    """Red for what you played, blue for what to play instead — the same
+    language the review tab already teaches. A third colour invented here would
+    mean the same idea is drawn two different ways in one app."""
+    html = (STATIC / "index.html").read_text()
+    key = html[html.index('id="fx-key"'):html.index("</div>", html.index('id="fx-key"'))]
+    assert "k-danger" in key and "what you played then" in key
+    assert "k-success" in key and "Stockfish" in key
+    assert "k-warning" in key and "played now" in key
+
+
+def test_the_fix_key_hides_arrows_that_were_not_drawn():
+    """Advertising an arrow that is not on the board is worse than no key."""
+    css = (STATIC / "style.css").read_text()
+    assert ".arrow-key.no-engine span:nth-child(2) { display: none; }" in css
+    assert ".arrow-key.no-yours span:nth-child(3) { display: none; }" in css
+    js = (STATIC / "app.js").read_text()
+    assert 'classList.toggle("no-yours"' in js
+    assert 'classList.toggle("no-engine"' in js
+
+
+def test_a_correction_that_does_not_hold_is_taken_back_visibly():
+    """Refusing the move outright leaves the piece snapping home with no
+    explanation. It lands, you see it, then it is wound off the board."""
+    js = (STATIC / "app.js").read_text()
+    body = js[js.index("async function submitFixMove"):]
+    body = body[:body.index("\n$(")]
+    assert "fen_after" in body, "the post-move position has to be shown first"
+    assert "taken back" in body

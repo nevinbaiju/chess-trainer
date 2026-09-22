@@ -1735,9 +1735,15 @@ async def correction_move(game_id: int, ply: int, move_in: PuzzleMove):
     )
     result["san"] = board.san(move)
     result["uci"] = move.uci()
+    # The position your move produced. Sent so the board can show the move go
+    # in and then take it back, rather than the piece silently snapping home.
+    result["fen_after"] = after.fen()
     result["reply"] = played_lines[0].pv_san(after, limit=4)
     engine_best = best_lines[0].best_move
     result["engine_best"] = board.san(engine_best) if engine_best else None
+    # UCI too: the browser has no chess library and cannot turn "Bf1+" into a
+    # pair of squares to draw an arrow between.
+    result["engine_best_uci"] = engine_best.uci() if engine_best else None
     result["engine_line"] = best_lines[0].pv_san(board, limit=5)
 
     wrong = attempt["wrong"] + (0 if result["held"] else 1)
@@ -1787,9 +1793,10 @@ async def correction_give_up(game_id: int, ply: int):
     lines = await state["stockfish"].analyse(board, depth=CORRECTION_DEPTH, multipv=1)
     db().update_correction(game_id, ply, attempt["served_at"], solved=0,
                            wrong=attempt["wrong"] + 1)
+    best = lines[0].best_move if lines else None
     shown = {"engine_line": lines[0].pv_san(board, limit=5) if lines else [],
-             "engine_best": board.san(lines[0].best_move)
-             if lines and lines[0].best_move else None}
+             "engine_best": board.san(best) if best else None,
+             "engine_best_uci": best.uci() if best else None}
     return correction_payload(blunder, db().open_correction() or attempt,
                               reveal=True,
                               extra={"status": "shown", "attempt": shown})

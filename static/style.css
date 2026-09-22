@@ -578,3 +578,7 @@ input[type=text]:focus, select:focus { outline: 2px solid var(--accent); outline
 #fx-bookmark-list li { grid-template-columns: 1fr auto; cursor: pointer; }
 #fx-bookmark-list li:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
 #fx-bookmark-list .rep-nm { overflow-wrap: normal; }
+/* The Fix key advertises three arrows; two of them are conditional. */
+.arrow-key.no-engine span:nth-child(2) { display: none; }
+.arrow-key.no-yours span:nth-child(3) { display: none; }
+#fx-key { margin-top: .4rem; }
